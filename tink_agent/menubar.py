@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+import atexit
 import subprocess
 import sys
 import time
@@ -9,7 +10,8 @@ from .audio import AudioCapture, DeviceNotFound, reinitialize as audio_reinitial
 from .detector import ToneDetector, VoiceGate
 from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
-from .engine import Engine
+from .engine import Engine, _default_frontmost
+from .dictation import DictationController
 from .activity_log import ActivityLogger, DEFAULT_LOG
 from . import launchagent
 
@@ -26,6 +28,16 @@ def _main_thread_dispatch(fn):
     process traps. callAfter is thread-safe to call from any thread."""
     from PyObjCTools import AppHelper
     AppHelper.callAfter(fn)
+
+
+def _main_thread_delay(ms: int, fn):
+    """Run fn on the main thread after ms milliseconds (dictation send delay)."""
+    import threading
+
+    def _fire():
+        _main_thread_dispatch(fn)
+
+    threading.Timer(max(0, ms) / 1000.0, _fire).start()
 
 
 class TinkAgentApp(rumps.App):
@@ -69,6 +81,13 @@ class TinkAgentApp(rumps.App):
         self._autostart_done = False
         self._timer = rumps.Timer(self._tick, 0.2)
         self._timer.start()
+        atexit.register(self._cleanup_dictation)
+
+    def _cleanup_dictation(self):
+        try:
+            self.engine.release_dictation("quit")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build_engine(self) -> Engine:
         c = self.config
@@ -82,8 +101,14 @@ class TinkAgentApp(rumps.App):
         router = ActionRouter(c.slot_actions, dispatch=_main_thread_dispatch)
         self.activity_log = ActivityLogger(
             enabled=c.log_activity, path=(c.log_path or None))
+        dictation = DictationController(
+            c, router, frontmost_fn=_default_frontmost,
+            dispatch=_main_thread_dispatch,
+            delay_fn=_main_thread_delay,
+            on_event=self._on_event,
+        )
         return Engine(c, det, vg, tr, router, on_event=self._on_event,
-                      logger=self.activity_log)
+                      logger=self.activity_log, dictation=dictation)
 
     def _make_transcriber(self) -> Transcriber:
         cmd, mode = resolve_stt(self.config)
@@ -103,6 +128,8 @@ class TinkAgentApp(rumps.App):
             self._last_tone_at = time.monotonic()
         elif kind == "blocked":
             self._last_action = f"blocked (wrong app): {payload}"
+        elif kind == "dictation":
+            self._last_action = f"dictation: {payload}"
         elif kind == "error":
             self._status = f"error: {str(payload)[:34]}"
 
@@ -112,6 +139,7 @@ class TinkAgentApp(rumps.App):
         # never touch AppKit off the main thread.
         import sys
         print(f"[audio] stream status: {status}", file=sys.stderr, flush=True)
+        self.engine.release_dictation("audio_glitch")
         self._status = f"audio glitch: {str(status)[:24]}"
 
     # --- main-thread rendering ---
@@ -143,10 +171,20 @@ class TinkAgentApp(rumps.App):
 
     # --- shared setters (called by both the menu and the Settings window) ---
     def set_enabled(self, value: bool):
+        if not value:
+            self.engine.release_dictation("disabled")
         self.engine.enabled = bool(value)
         self.config.enabled = bool(value)
         self.config.save()
         self.enabled_item.state = bool(value)
+
+    def set_dictation_enabled(self, value: bool):
+        self.config.dictation_enabled = bool(value)
+        self.config.save()
+        if self.engine.dictation is not None:
+            self.engine.dictation.reload_config()
+            if not value:
+                self.engine.release_dictation("dictation_off")
 
     def set_listening(self, value: bool):
         if value:
@@ -285,6 +323,7 @@ class TinkAgentApp(rumps.App):
             self._status = f"error: {str(e)[:30]}"
 
     def stop_listening(self, _):
+        self.engine.release_dictation("stop_listening")
         if self.capture:
             self.capture.stop()
             self.capture = None

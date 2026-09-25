@@ -54,7 +54,7 @@ def test_defaults_have_eight_slots():
     assert c.tones == {1: 1500, 2: 2300, 3: 3100, 4: 3900,
                        5: 2751, 6: 4218, 7: 5685, 8: 7153}
     assert c.slot_actions == {1: "enter", 2: "escape", 3: "ctrl_c", 4: "shift_tab",
-                              5: "up", 6: "down", 7: "noop", 8: "noop"}
+                              5: "up", 6: "down", 7: "tab", 8: "backspace"}
 
 
 def test_legacy_four_slot_config_backfills_modeB(tmp_path):
@@ -67,7 +67,7 @@ def test_legacy_four_slot_config_backfills_modeB(tmp_path):
     loaded = Config.load(p)
     assert loaded.tones[5] == 2751 and loaded.tones[8] == 7153
     assert loaded.slot_actions[5] == "up" and loaded.slot_actions[6] == "down"
-    assert loaded.slot_actions[7] == "noop" and loaded.slot_actions[8] == "noop"
+    assert loaded.slot_actions[7] == "tab" and loaded.slot_actions[8] == "backspace"
     # User's mode-A choices are preserved, not overwritten.
     assert loaded.tones[1] == 1500 and loaded.slot_actions[1] == "enter"
 
@@ -95,6 +95,21 @@ def test_onboarding_done_roundtrip(tmp_path):
     p = tmp_path / "config.json"
     Config(onboarding_done=True).save(p)
     assert Config.load(p).onboarding_done is True
+
+
+def test_dictation_defaults():
+    c = Config()
+    assert c.dictation_enabled is True
+    assert c.dictation_onset_rms == 90.0
+    assert len(c.dictation_profiles) >= 3
+    assert any(p.get("match") == "Cursor" for p in c.dictation_profiles)
+
+
+def test_dictation_profiles_backfill_on_load(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"device_name": "USB Advanced Audio Device"}))
+    loaded = Config.load(p)
+    assert loaded.dictation_profiles
 
 
 def test_onboarding_done_absent_loads_false(tmp_path):

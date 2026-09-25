@@ -3,6 +3,8 @@ import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+from .dictation import DEFAULT_PROFILES
+
 DEFAULT_PATH = Path.home() / ".tink-agent" / "config.json"
 MW_BINARY = "/Applications/MacWhisper.app/Contents/MacOS/mw"
 
@@ -34,8 +36,18 @@ class Config:
     stt_output: str = "last_line"  # custom: last_line | all | file | dir
     slot_actions: dict = field(default_factory=lambda: {
         1: "enter", 2: "escape", 3: "ctrl_c", 4: "shift_tab",   # mode A
-        5: "up", 6: "down", 7: "noop", 8: "noop",               # mode B (7,8 reserved)
+        5: "up", 6: "down", 7: "tab", 8: "backspace",           # mode B
     })
+    # Push-to-talk dictation (app-native STT shortcuts; independent of VoiceGate/STT).
+    dictation_enabled: bool = True
+    dictation_onset_rms: float = 90.0
+    dictation_release_rms: float = 70.0
+    dictation_onset_min_ms: int = 80
+    dictation_hangover_ms: int = 450
+    dictation_onset_window_ms: int = 25
+    dictation_send_delay_ms: int = 200
+    dictation_max_session_ms: int = 60000
+    dictation_profiles: list = field(default_factory=lambda: list(DEFAULT_PROFILES))
     # When non-empty, keystrokes/typing only fire if the frontmost app's name or
     # bundle id matches one of these entries (substrings, e.g. bundle ids like
     # "com.apple.Terminal"). Empty list = act in any app.
@@ -71,6 +83,8 @@ class Config:
             d["tones"] = {**defaults.tones, **d["tones"]}
         if "slot_actions" in d:
             d["slot_actions"] = {**defaults.slot_actions, **d["slot_actions"]}
+        if "dictation_profiles" not in d:
+            d["dictation_profiles"] = list(defaults.dictation_profiles)
         # Migrate legacy single target_app -> target_apps list.
         if not d.get("target_apps") and d.get("target_app"):
             d["target_apps"] = [d["target_app"]]
