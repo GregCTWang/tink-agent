@@ -150,7 +150,8 @@ class KnobSerialMonitor:
                 self._sleep(0.05)
         if b">>> " not in buf:
             raise RuntimeError("repl prompt timeout")
-        ser.write(_exec_payload(_POLL_LOOP))
+        poll_ms = getattr(self.config, "knob_poll_ms", 10)
+        ser.write(_exec_payload(_poll_loop_source(poll_ms)))
         ser.flush()
         self._set_connected(True, port)
         last_hb = time.monotonic()
