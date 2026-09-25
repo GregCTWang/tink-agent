@@ -68,9 +68,6 @@ class ActivityLogger:
     def keys(self, app, detail: str) -> None:
         self._write("keys", app, detail)
 
-    def restore(self, app, detail: str) -> None:
-        self._write("restore", app, detail)
-
     def close(self) -> None:
         with self._lock:
             if self._fh is not None:

@@ -10,10 +10,6 @@ from typing import Callable
 
 TE_VID = 0x2367
 TE_PID = 0x0620
-REPL_PROMPT = b">>> "
-REPL_PROMPT_WAIT_S = 0.75
-REPL_CTRL_C_COUNT = 2
-REPL_CTRL_C_GAP_S = 0.2
 
 
 def _poll_loop_source(sleep_ms: int) -> str:
@@ -184,40 +180,25 @@ class KnobSerialMonitor:
             return []
         return re.findall(r"(K[01]|G[01]|HB)", line)
 
-    def _wait_for_repl_prompt(self, ser, buf: bytes, deadline: float) -> bytes:
-        """Wait for MicroPython REPL prompt; interrupt a stuck poll loop if needed."""
-        interrupt_sent = False
-        next_interrupt_at = self._mono() + REPL_PROMPT_WAIT_S
-        while self._mono() < deadline and not self._stop.is_set():
-            buf += ser.read(256)
-            buf, _ = self._drain_lines(buf)
-            if REPL_PROMPT in buf:
-                return buf
-            now = self._mono()
-            if now >= next_interrupt_at and not interrupt_sent:
-                for i in range(REPL_CTRL_C_COUNT):
-                    ser.write(b"\x03")
-                    ser.flush()
-                    if i + 1 < REPL_CTRL_C_COUNT:
-                        self._sleep(REPL_CTRL_C_GAP_S)
-                ser.write(b"\r")
-                ser.flush()
-                interrupt_sent = True
-            elif not buf:
-                ser.write(b"\r")
-                ser.flush()
-                self._sleep(0.05)
-            else:
-                self._sleep(0.02)
-        return buf
-
     def _session(self, port: str) -> None:
         ser = self._serial_factory(port, timeout=0.1)
         self._ser = ser
         self.port = port
+        buf = b""
+        # Interrupt any poll loop left running on the mic by a previous session
+        # (e.g. after tink-agent was restarted), so the REPL prompt comes back.
+        ser.write(b"\x03\x03")
+        self._sleep(0.1)
         deadline = self._mono() + 8.0
-        buf = self._wait_for_repl_prompt(ser, b"", deadline)
-        if REPL_PROMPT not in buf:
+        while self._mono() < deadline and not self._stop.is_set():
+            buf += ser.read(256)
+            buf, _ = self._drain_lines(buf)
+            if b">>> " in buf:
+                break
+            if not buf:
+                ser.write(b"\r")
+                self._sleep(0.05)
+        if b">>> " not in buf:
             raise RuntimeError("repl prompt timeout")
 
         poll_ms = getattr(self.config, "knob_poll_ms", 10)

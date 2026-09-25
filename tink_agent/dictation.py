@@ -9,13 +9,6 @@ from typing import Callable
 
 import numpy as np
 
-from .ax_restore import (
-    CancelRestoreEngine,
-    FocusSnapshot,
-    SnapshotAttempt,
-    is_safe_snapshot_target,
-)
-
 DEFAULT_PROFILES: list[dict] = [
     {
         "match": "Grok Bot",
@@ -23,9 +16,6 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["cmd", "d"],
         "auto_send": True,
         "send_delay_ms": 200,
-        "restore_on_cancel": False,
-        "cancel_method": "escape",
-        "cancel_sequence": "escape_then_release",
     },
     {
         "match": "Claude",
@@ -33,9 +23,6 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["cmd", "d"],
         "auto_send": True,
         "send_delay_ms": 200,
-        "restore_on_cancel": False,
-        "cancel_method": "escape",
-        "cancel_sequence": "escape_then_release",
     },
     {
         "match": "Cursor",
@@ -43,20 +30,9 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["ctrl", "m"],
         "auto_send": True,
         "send_delay_ms": 200,
-        "restore_on_cancel": False,
-        "cancel_method": "escape",
-        "cancel_sequence": "escape_then_release",
+        "cancel_escape": True,
     },
 ]
-
-
-def resolve_cancel_method(profile: dict) -> str:
-    raw = profile.get("cancel_method")
-    if raw:
-        return str(raw).strip().lower()
-    if profile.get("restore_on_cancel"):
-        return "restore"
-    return "escape"
 
 DEFAULT_DEBUG_LOG = Path.home() / "Library" / "Logs" / "TinkAgent-dictation-debug.log"
 
@@ -220,7 +196,6 @@ class DictationController:
         logger=None,
         debug_logger: DictationDebugLogger | None = None,
         monotonic_fn: Callable[[], float] | None = None,
-        ax_port_factory: Callable[[object, Callable], object | None] | None = None,
     ):
         self.config = config
         self.router = router
@@ -243,13 +218,6 @@ class DictationController:
         self._speech_detected = False
         self._knob_start_generation = 0
         self._session_toggle_tap_at: float | None = None
-        self._cancel_snapshot: FocusSnapshot | None = None
-        self._ax_port_factory = ax_port_factory
-        self._ax_port = None
-        self._session_epoch = 0
-        self._pending_enter_token = 0
-        self._restart_ready_at = 0.0
-        self._speech_ms = 0.0
 
     @property
     def knob_source(self) -> str:
@@ -309,12 +277,7 @@ class DictationController:
                 return
             if not self.knob_held or self._gate.active:
                 return
-            if self._mono() < self._restart_ready_at:
-                wait_ms = int((self._restart_ready_at - self._mono()) * 1000.0) + 1
-                self._delay(wait_ms, fire)
-                return
             self._speech_detected = False
-            self._speech_ms = 0.0
             self._skip_release_send = False
             self._begin_session()
 
@@ -340,8 +303,7 @@ class DictationController:
                 return
             if self._gate.active:
                 self._gate.reset()
-                min_speech = int(getattr(self.config, "dictation_min_speech_ms", 300))
-                if self._speech_detected and self._speech_ms >= min_speech:
+                if self._speech_detected:
                     action = getattr(self.config, "dictation_release_action", "enter")
                     self._end_session(reason="release_send", post_action=action)
                 else:
@@ -349,7 +311,6 @@ class DictationController:
             return
         if token == "G0":
             self._log_knob("grey_press")
-            self._cancel_pending_enter("grey_cancel")
             if self._gate.active and self.knob_held:
                 self._skip_release_send = True
                 self._gate.reset()
@@ -386,8 +347,6 @@ class DictationController:
             self._idle_ms = 0.0
             if self._gate.active:
                 self._speech_detected = True
-                block_ms = 1000.0 * self.config.block_size / self.config.sample_rate
-                self._speech_ms += block_ms
 
         if src == "serial":
             pass
@@ -474,106 +433,7 @@ class DictationController:
         elif self.logger is not None:
             self.logger.dictation(front, f"keys {detail}")
 
-    def _log_restore(self, detail: str) -> None:
-        front = self._front()
-        if self.logger is not None and hasattr(self.logger, "restore"):
-            self.logger.restore(front, detail)
-        elif self.logger is not None:
-            self.logger.dictation(front, f"restore {detail}")
-
-    def _cancel_pending_enter(self, reason: str) -> None:
-        self._pending_enter_token += 1
-        if reason:
-            self.debug_logger.log_session(f"enter cancelled reason={reason}")
-
-    def _finish_end_sequence(self) -> None:
-        cd = int(getattr(self.config, "dictation_restart_cooldown_ms", 700))
-        self._restart_ready_at = self._mono() + cd / 1000.0
-
-    def _front_matches_session(self, session_front: str) -> bool:
-        if not session_front:
-            return True
-        cur = (self._front() or "").lower()
-        exp = session_front.lower()
-        return exp in cur or cur in exp
-
-    def _get_ax_port(self):
-        if self._ax_port is not None:
-            return self._ax_port
-        if self._ax_port_factory is None:
-            return None
-        self._ax_port = self._ax_port_factory(self.router, self._dispatch)
-        return self._ax_port
-
-    def _snapshot_for_cancel(self, profile: dict) -> None:
-        self._cancel_snapshot = None
-        if resolve_cancel_method(profile) != "restore":
-            return
-        port = self._get_ax_port()
-        if port is None:
-            self._log_restore("restore skipped reason=ax_unavailable")
-            return
-        attempt = port.snapshot_focused()
-        raw = attempt.snapshot if isinstance(attempt, SnapshotAttempt) else attempt
-        fail_detail = attempt.failure if isinstance(attempt, SnapshotAttempt) else ""
-        if raw is None:
-            suffix = f" {fail_detail}".rstrip()
-            self._log_restore(f"restore skipped reason=unreadable{suffix}")
-            return
-        match_name = str(profile.get("match") or "")
-        if not is_safe_snapshot_target(raw, match_name):
-            self._log_restore(
-                f"restore skipped reason=unsafe_target role={raw.role} subrole={raw.subrole}"
-            )
-            return
-        self._cancel_snapshot = raw
-        vlen = len(raw.value) if raw.value is not None else 0
-        if not raw.value_readable:
-            self._log_restore(f"snapshot len=- role={raw.role} subrole={raw.subrole} readable=0")
-        else:
-            self._log_restore(
-                f"snapshot len={vlen} role={raw.role} subrole={raw.subrole}"
-            )
-
-    def _schedule_cancel_restore(self, profile: dict, snap: FocusSnapshot) -> None:
-        port = self._get_ax_port()
-        if port is None:
-            return
-        match_name = str(profile.get("match") or "")
-        timeout_ms = int(getattr(self.config, "cancel_restore_timeout_ms", 4000))
-        settle_ms = int(getattr(self.config, "cancel_restore_settle_ms", 400))
-
-        def run() -> None:
-            engine = CancelRestoreEngine(
-                port,
-                timeout_ms=timeout_ms,
-                settle_ms=settle_ms,
-            )
-            engine.restore_after_cancel(snap, match_name, self._log_restore)
-
-        self._delay(350, lambda: self._dispatch(run))
-
-    def _schedule_cancel_fallback(self, profile: dict, *, stop_delay_ms: int = 0) -> None:
-        fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
-        if fallback in ("", "none"):
-            return
-        if fallback == "undo":
-            delay_ms = int(
-                profile.get("cancel_fallback_delay_ms")
-                or getattr(self.config, "cancel_fallback_delay_ms", 1500)
-            )
-            total = stop_delay_ms + delay_ms
-
-            def undo() -> None:
-                self.router.dictation_tap(["cmd", "z"])
-                self._log_keys("cmd+z (cancel_fallback)")
-
-            self._delay(total, lambda: self._dispatch(undo))
-
     def _begin_session(self) -> None:
-        if self._mono() < self._restart_ready_at:
-            return
-        self._cancel_pending_enter("new_session")
         front = self._front()
         profile = match_profile(front, self.config.dictation_profiles or [])
         if profile is None:
@@ -581,9 +441,6 @@ class DictationController:
             self._on_event("dictation", "no_profile")
             self._log_dictation(f"start skipped reason=no_profile front={front[:40]}")
             return
-        self._session_epoch += 1
-        self._speech_ms = 0.0
-        self._speech_detected = False
         self._gate.activate()
         self._profile = profile
         mode = profile.get("mode", "toggle")
@@ -593,7 +450,6 @@ class DictationController:
         self._log_dictation(
             f"start profile={match_name} mode={mode} knob_source={self.knob_source}")
         label = self._keys_label(keys)
-        self._snapshot_for_cancel(profile)
 
         def start_keys() -> None:
             if mode == "hold":
@@ -614,8 +470,6 @@ class DictationController:
         cancelled: bool = False,
     ) -> None:
         profile = self._profile
-        restore_snap = self._cancel_snapshot
-        self._cancel_snapshot = None
         self._profile = None
         self._idle_ms = 0.0
         if profile is None:
@@ -628,14 +482,9 @@ class DictationController:
         match_name = profile.get("match", "")
         label = self._keys_label(keys)
         min_gap_ms = int(getattr(self.config, "dictation_min_toggle_gap_ms", 400))
-        cancel_method = resolve_cancel_method(profile) if cancelled else ""
-        session_front = self._front()
-        closed_epoch = self._session_epoch
-        self._cancel_pending_enter("session_end")
-        enter_token = self._pending_enter_token
 
         def stop_keys() -> None:
-            if cancelled and cancel_method == "stop" and profile.get("cancel_escape"):
+            if cancelled and profile.get("cancel_escape"):
                 self.router.dictation_tap(["esc"])
                 self._log_keys("escape")
             if mode == "hold":
@@ -651,92 +500,21 @@ class DictationController:
 
         self._on_event("dictation", ("stop", reason))
         self._log_dictation(
-            f"stop reason={reason} profile={match_name} knob_source={self.knob_source}"
-        )
+            f"stop reason={reason} profile={match_name} knob_source={self.knob_source}")
 
-        if cancelled and cancel_method == "escape":
-            self._session_toggle_tap_at = None
-
-            def do_escape_cancel() -> None:
-                self.router.dictation_grey_cancel_escape(
-                    profile,
-                    self.config,
-                    log_fn=self._log_keys,
-                )
-
-            self._dispatch(do_escape_cancel)
-            self._delay(180, lambda: self._finish_end_sequence())
-            return
-
-        if cancelled and cancel_method == "undo_after_release":
-            self._session_toggle_tap_at = None
-            wait_ms = int(
-                profile.get("cancel_fallback_delay_ms")
-                or getattr(self.config, "cancel_fallback_delay_ms", 1500)
-            )
-
-            def do_undo_cancel() -> None:
-                self.router.dictation_grey_cancel_undo_after_release(
-                    profile,
-                    self.config,
-                    log_fn=self._log_keys,
-                )
-
-            self._dispatch(do_undo_cancel)
-            self._delay(wait_ms + 200, lambda: self._finish_end_sequence())
-            return
-
-        def schedule_enter() -> None:
-            if post_action in (None, "noop", "unmapped"):
-                self._finish_end_sequence()
-                return
-
-            def fire_enter() -> None:
-                if enter_token != self._pending_enter_token:
-                    self._log_keys("enter skipped reason=superseded")
-                    self._finish_end_sequence()
-                    return
-                if self._gate.active:
-                    self._log_keys("enter skipped reason=new_session")
-                    self._finish_end_sequence()
-                    return
-                if closed_epoch != self._session_epoch:
-                    self._log_keys("enter skipped reason=new_session")
-                    self._finish_end_sequence()
-                    return
-                if not self._front_matches_session(session_front):
-                    self._log_keys("enter skipped reason=app_changed")
-                    self._finish_end_sequence()
-                    return
-                self.router.fire_named_action(post_action)
-                self._log_keys(post_action.replace("_", "+"))
-                self._finish_end_sequence()
-
-            self._delay(delay_ms, lambda: self._dispatch(fire_enter))
-
-        def run_stop_then_enter() -> None:
-            self._dispatch(stop_keys)
-            if cancelled:
-                self._finish_end_sequence()
-            else:
-                schedule_enter()
-
-        stop_delay_ms = 0
-        if mode == "toggle" and self._session_toggle_tap_at is not None and not cancelled:
+        if mode == "toggle" and self._session_toggle_tap_at is not None:
             elapsed_ms = (self._mono() - self._session_toggle_tap_at) * 1000.0
             wait_ms = int(max(0, min_gap_ms - elapsed_ms))
-            stop_delay_ms = wait_ms
             if wait_ms > 0:
-                self._delay(wait_ms, run_stop_then_enter)
+                self._delay(wait_ms, dispatch_stop)
             else:
-                run_stop_then_enter()
+                dispatch_stop()
         else:
-            run_stop_then_enter()
+            dispatch_stop()
 
-        if cancelled and cancel_method == "restore" and restore_snap is not None:
-            self._schedule_cancel_restore(profile, restore_snap)
+        if post_action and post_action not in ("noop", "unmapped") and not cancelled:
+            def post() -> None:
+                self.router.fire_named_action(post_action)
+                self._log_keys(post_action.replace("_", "+"))
 
-        if cancelled and cancel_method == "restore":
-            fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
-            if fallback == "undo":
-                self._schedule_cancel_fallback(profile, stop_delay_ms=stop_delay_ms)
+            self._delay(delay_ms, lambda: self._dispatch(post))
