@@ -105,30 +105,70 @@ def _setup(kb, serial_linked=True):
     return eng, dictation, scheduled, router
 
 
+def _run_debounce(sched):
+    assert sched, "knob debounce not scheduled"
+    ms, fn = sched.pop(0)
+    fn()
+    return ms
+
+
+def _drain_sched(sched):
+    while sched:
+        _, fn = sched.pop(0)
+        fn()
+
+
 def test_hold_speak_release_sends_enter_once():
     kb = FakeKeyboard()
     eng, d, sched, _ = _setup(kb)
     d.on_serial_line("K1")
+    _run_debounce(sched)
+    assert d.is_active
     for _ in range(2):
         eng.handle_block(_speech())
-    assert d.is_active
     d.on_serial_line("K0")
     assert not d.is_active
-    assert len(sched) == 1
-    sched[0][1]()
+    _drain_sched(sched)
     assert ("press", "ENTER") in kb.events
+
+
+def test_hold_no_speech_release_no_enter():
+    kb = FakeKeyboard()
+    eng, d, sched, _ = _setup(kb)
+    d.on_serial_line("K1")
+    _run_debounce(sched)
+    assert d.is_active
+    for _ in range(5):
+        eng.handle_block(np.full(800, 26, dtype=np.int16))
+    d.on_serial_line("K0")
+    _drain_sched(sched)
+    assert ("press", "ENTER") not in kb.events
+    assert any(e[0] == "press" for e in kb.events)
+
+
+def test_knob_tap_shorter_than_debounce_does_nothing():
+    kb = FakeKeyboard()
+    eng, d, sched, _ = _setup(kb)
+    c = d.config
+    c.knob_start_debounce_ms = 150
+    d.on_serial_line("K1")
+    d.on_serial_line("K0")
+    assert not d.is_active
+    assert kb.events == []
+    _drain_sched(sched)
+    assert not d.is_active
 
 
 def test_grey_cancel_then_release_no_send():
     kb = FakeKeyboard()
     eng, d, sched, _ = _setup(kb)
     d.on_serial_line("K1")
-    for _ in range(2):
-        eng.handle_block(_speech())
+    _run_debounce(sched)
     d.on_serial_line("G0")
     assert not d.is_active
     d.on_serial_line("K0")
-    assert sched == []
+    _drain_sched(sched)
+    assert ("press", "ENTER") not in kb.events
 
 
 def test_no_start_without_knob_held():
@@ -142,10 +182,9 @@ def test_no_start_without_knob_held():
 
 def test_long_silent_hold_never_ends():
     kb = FakeKeyboard()
-    eng, d, _, _ = _setup(kb)
+    eng, d, sched, _ = _setup(kb)
     d.on_serial_line("K1")
-    for _ in range(2):
-        eng.handle_block(_speech())
+    _run_debounce(sched)
     for _ in range(500):
         eng.handle_block(np.full(800, 26, dtype=np.int16))
     assert d.is_active
@@ -166,10 +205,14 @@ def test_idle_cap_when_released_and_silent():
         dispatch=lambda fn: fn(), delay_fn=lambda _m, fn: fn(),
     )
     d.set_serial_link(True, "t")
-    d.knob_held = True
+    sched: list = []
+
+    def delay_fn(ms, fn):
+        sched.append((ms, fn))
+
+    d._delay = delay_fn
     d.on_serial_line("K1")
-    for _ in range(2):
-        d.observe_block(_speech(), False)
+    _run_debounce(sched)
     d.knob_held = False
     for _ in range(10):
         d.observe_block(np.full(800, 26, dtype=np.int16), False)

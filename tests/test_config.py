@@ -104,6 +104,8 @@ def test_dictation_defaults():
     assert c.button_detector == "fxmic"
     assert c.knob_serial_enabled is True
     assert c.dictation_idle_cap_ms == 180000
+    assert c.dictation_min_toggle_gap_ms == 400
+    assert c.knob_start_debounce_ms == 150
     assert c.dictation_release_action == "enter"
     assert c.fx_button_similarity_min == 0.72
     assert c.dictation_debug_log is False

@@ -117,9 +117,9 @@ def test_idle_cap_no_post_action():
     )
     eng, sched = _engine_with_dictation(kb, config=c)
     eng.dictation.set_serial_link(True, "t")
-    eng.dictation.knob_held = True
-    for _ in range(2):
-        eng.handle_block(_speech_block())
+    eng.dictation.on_serial_line("K1")
+    assert sched, "knob debounce"
+    sched.pop(0)[1]()
     eng.dictation.knob_held = False
     for _ in range(10):
         eng.handle_block(np.full(800, 26, dtype=np.int16))

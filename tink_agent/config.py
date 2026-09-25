@@ -47,9 +47,11 @@ class Config:
     dictation_release_action: str = "enter"
     dictation_idle_cap_ms: int = 180000
     dictation_max_session_ms: int = 60000  # legacy; unused when serial idle cap active
+    dictation_min_toggle_gap_ms: int = 400
     knob_serial_enabled: bool = True
     knob_serial_port: str = ""  # auto: TE EP-2350 CDC /dev/cu.usbmodemEP*
     knob_poll_ms: int = 10
+    knob_start_debounce_ms: int = 150
     dictation_profiles: list = field(default_factory=lambda: list(DEFAULT_PROFILES))
     # Per-slot action after button ends session (defaults to slot_actions for 1-4).
     dictation_end_actions: dict = field(default_factory=dict)

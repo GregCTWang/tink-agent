@@ -65,6 +65,9 @@ class ActivityLogger:
     def knob(self, app, detail: str) -> None:
         self._write("knob", app, detail)
 
+    def keys(self, app, detail: str) -> None:
+        self._write("keys", app, detail)
+
     def close(self) -> None:
         with self._lock:
             if self._fh is not None:

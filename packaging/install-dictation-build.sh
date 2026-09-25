@@ -106,8 +106,9 @@ if not existing.get("fx_button_templates"):
 if "button_detector" not in existing:
     merged["button_detector"] = defaults.get("button_detector", "fxmic")
 for key in (
-    "knob_serial_enabled", "knob_poll_ms", "dictation_release_action",
-    "dictation_idle_cap_ms",
+    "knob_serial_enabled", "knob_poll_ms", "knob_start_debounce_ms",
+    "dictation_release_action", "dictation_idle_cap_ms",
+    "dictation_min_toggle_gap_ms",
 ):
     if key not in existing:
         merged[key] = defaults.get(key)

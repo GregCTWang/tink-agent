@@ -60,3 +60,13 @@ def test_dictation_and_tone_log_kinds(tmp_path):
     assert "\tdictation\t" in text
     assert "start profile=Cursor" in text
     assert "\ttone\t" in text and "slot2" in text
+
+
+def test_keys_log_kind(tmp_path):
+    lg = _logger(tmp_path)
+    lg.keys("Grok Bot com.grok", "cmd+d (start)")
+    lg.keys("Grok Bot com.grok", "enter")
+    lg.close()
+    text = (tmp_path / "activity.log").read_text()
+    assert "\tkeys\tGrok Bot com.grok\tcmd+d (start)" in text
+    assert "\tkeys\tGrok Bot com.grok\tenter" in text
