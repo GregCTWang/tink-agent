@@ -49,3 +49,14 @@ def test_set_enabled_toggles(tmp_path):
     lg.close()
     text = (tmp_path / "activity.log").read_text()
     assert "yes" in text and "nope" not in text
+
+
+def test_dictation_and_tone_log_kinds(tmp_path):
+    lg = _logger(tmp_path)
+    lg.dictation("Cursor app", "start profile=Cursor mode=hold")
+    lg.tone(2, "Cursor app", "detected")
+    lg.close()
+    text = (tmp_path / "activity.log").read_text()
+    assert "\tdictation\t" in text
+    assert "start profile=Cursor" in text
+    assert "\ttone\t" in text and "slot2" in text

@@ -41,13 +41,23 @@ class Config:
     # Push-to-talk dictation (app-native STT shortcuts; independent of VoiceGate/STT).
     dictation_enabled: bool = True
     dictation_onset_rms: float = 90.0
-    dictation_release_rms: float = 70.0
+    # Fixed release cutoff when dictation_auto_floor is false; otherwise mid-point hint.
+    dictation_release_rms: float = 35.0
     dictation_onset_min_ms: int = 80
     dictation_hangover_ms: int = 450
     dictation_onset_window_ms: int = 25
     dictation_send_delay_ms: int = 200
     dictation_max_session_ms: int = 60000
     dictation_profiles: list = field(default_factory=lambda: list(DEFAULT_PROFILES))
+    # Release when RMS drops below threshold between released (~28) and held (~43) floors.
+    dictation_auto_floor: bool = True
+    dictation_floor_released_rms: float = 28.0
+    dictation_floor_held_rms: float = 43.0
+    dictation_floor_ema_alpha: float = 0.08
+    dictation_cancel_on_any_tone: bool = True
+    dictation_debug_log: bool = False
+    dictation_debug_path: str = ""
+    dictation_debug_rms_min: float = 500.0
     # When non-empty, keystrokes/typing only fire if the frontmost app's name or
     # bundle id matches one of these entries (substrings, e.g. bundle ids like
     # "com.apple.Terminal"). Empty list = act in any app.

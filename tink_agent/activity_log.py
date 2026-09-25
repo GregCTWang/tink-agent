@@ -56,6 +56,12 @@ class ActivityLogger:
     def blocked(self, what, app=None) -> None:
         self._write("blocked", app, what)
 
+    def dictation(self, app, detail: str) -> None:
+        self._write("dictation", app, detail)
+
+    def tone(self, slot: int, app=None, detail: str = "") -> None:
+        self._write("tone", app, f"slot{slot}{(' ' + detail) if detail else ''}")
+
     def close(self) -> None:
         with self._lock:
             if self._fh is not None:

@@ -29,10 +29,12 @@ class ToneDetector:
         self.tone_active = False
         self._last_slot = None
         self._was_tone_active = False
+        self.last_metrics: dict = {}
 
     def process(self, block: np.ndarray) -> int | None:
         block = np.asarray(block, dtype=np.float64).reshape(-1)
         rms = float(np.sqrt(np.mean(block * block))) if block.size else 0.0
+        self.last_metrics = {"rms": rms, "best_freq": None, "dominance": None, "tonality": None}
 
         if rms < self.rms_min:
             self.tone_active = False
@@ -54,6 +56,13 @@ class ToneDetector:
         n = block.size
         block_energy = float(np.sum(block * block)) + 1e-9
         tonality = mags[best_slot] / (block_energy * n / 2.0)
+        self.last_metrics = {
+            "rms": rms,
+            "best_freq": self.tones.get(best_slot),
+            "best_slot": best_slot,
+            "dominance": dominance,
+            "tonality": tonality,
+        }
         self.tone_active = (dominance >= self.dominance_min
                             and tonality >= self.tonality_min)
 

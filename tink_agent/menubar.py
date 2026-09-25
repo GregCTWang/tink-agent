@@ -11,7 +11,7 @@ from .detector import ToneDetector, VoiceGate
 from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
 from .engine import Engine, _default_frontmost
-from .dictation import DictationController
+from .dictation import DictationController, DictationDebugLogger
 from .activity_log import ActivityLogger, DEFAULT_LOG
 from . import launchagent
 
@@ -101,11 +101,17 @@ class TinkAgentApp(rumps.App):
         router = ActionRouter(c.slot_actions, dispatch=_main_thread_dispatch)
         self.activity_log = ActivityLogger(
             enabled=c.log_activity, path=(c.log_path or None))
+        self._dictation_debug = DictationDebugLogger(
+            enabled=c.dictation_debug_log,
+            path=(c.dictation_debug_path or None),
+        )
         dictation = DictationController(
             c, router, frontmost_fn=_default_frontmost,
             dispatch=_main_thread_dispatch,
             delay_fn=_main_thread_delay,
             on_event=self._on_event,
+            logger=self.activity_log,
+            debug_logger=self._dictation_debug,
         )
         return Engine(c, det, vg, tr, router, on_event=self._on_event,
                       logger=self.activity_log, dictation=dictation)
@@ -182,9 +188,9 @@ class TinkAgentApp(rumps.App):
         self.config.dictation_enabled = bool(value)
         self.config.save()
         if self.engine.dictation is not None:
-            self.engine.dictation.reload_config()
             if not value:
                 self.engine.release_dictation("dictation_off")
+            self.engine.dictation.reload_config()
 
     def set_listening(self, value: bool):
         if value:

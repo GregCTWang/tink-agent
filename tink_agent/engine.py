@@ -52,13 +52,16 @@ class Engine:
             return
         slot = self.detector.process(block)
         tone_active = self.detector.tone_active
+        metrics = getattr(self.detector, "last_metrics", None)
+        front = self._front()
         if slot is not None:
-            front = self._front()
+            if self.logger:
+                self.logger.tone(slot, front, "detected")
             if self.dictation and self.dictation.handle_tone(slot):
                 self._on_event("tone", slot)
                 self._on_event("action", "dictation_cancel")
                 if self.logger:
-                    self.logger.action(slot, "dictation_cancel", front)
+                    self.logger.tone(slot, front, "dictation_cancel")
             elif self._target_ok(front):
                 action = self.router.fire_slot(slot)
                 self._on_event("tone", slot)
@@ -71,7 +74,8 @@ class Engine:
                     self.logger.blocked(f"slot{slot}", front)
         if self.dictation is not None:
             try:
-                self.dictation.process_block(block, tone_active)
+                self.dictation.observe_block(
+                    block, tone_active, slot=slot, tone_metrics=metrics)
             except Exception:  # noqa: BLE001
                 self.dictation.force_release("error")
         utterance = self.voicegate.process(block, tone_active)

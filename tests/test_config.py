@@ -101,6 +101,11 @@ def test_dictation_defaults():
     c = Config()
     assert c.dictation_enabled is True
     assert c.dictation_onset_rms == 90.0
+    assert c.dictation_auto_floor is True
+    assert c.dictation_floor_released_rms == 28.0
+    assert c.dictation_floor_held_rms == 43.0
+    assert c.dictation_cancel_on_any_tone is True
+    assert c.dictation_debug_log is False
     assert len(c.dictation_profiles) >= 3
     assert any(p.get("match") == "Cursor" for p in c.dictation_profiles)
 
