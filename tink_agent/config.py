@@ -41,23 +41,33 @@ class Config:
     # Push-to-talk dictation (app-native STT shortcuts; independent of VoiceGate/STT).
     dictation_enabled: bool = True
     dictation_onset_rms: float = 90.0
-    # Fixed release cutoff when dictation_auto_floor is false; otherwise mid-point hint.
-    dictation_release_rms: float = 35.0
     dictation_onset_min_ms: int = 80
-    dictation_hangover_ms: int = 450
     dictation_onset_window_ms: int = 25
     dictation_send_delay_ms: int = 200
     dictation_max_session_ms: int = 60000
     dictation_profiles: list = field(default_factory=lambda: list(DEFAULT_PROFILES))
-    # Release when RMS drops below threshold between released (~28) and held (~43) floors.
-    dictation_auto_floor: bool = True
-    dictation_floor_released_rms: float = 28.0
-    dictation_floor_held_rms: float = 43.0
-    dictation_floor_ema_alpha: float = 0.08
-    dictation_cancel_on_any_tone: bool = True
+    # Per-slot action after button ends session (defaults to slot_actions for 1-4).
+    dictation_end_actions: dict = field(default_factory=dict)
     dictation_debug_log: bool = False
     dictation_debug_path: str = ""
     dictation_debug_rms_min: float = 500.0
+    # Button detection: "fxmic" (EP-2350) or "tone" (legacy pure-tone Goertzel).
+    button_detector: str = "fxmic"
+    fx_button_templates: dict = field(default_factory=dict)
+    fx_button_similarity_min: float = 0.72
+    fx_button_rms_min: float = 2000.0
+    fx_button_lockout_ms: int = 1000
+    fx_button_slot1_rms_min: float = 3500.0
+    fx_button_slot1_min_ms: int = 150
+    fx_button_slot1_square_min: float = 0.22
+    # Legacy silence-floor keys (ignored; kept for config merge compatibility).
+    dictation_release_rms: float = 35.0
+    dictation_hangover_ms: int = 450
+    dictation_auto_floor: bool = False
+    dictation_floor_released_rms: float = 28.0
+    dictation_floor_held_rms: float = 43.0
+    dictation_floor_ema_alpha: float = 0.08
+    dictation_cancel_on_any_tone: bool = False
     # When non-empty, keystrokes/typing only fire if the frontmost app's name or
     # bundle id matches one of these entries (substrings, e.g. bundle ids like
     # "com.apple.Terminal"). Empty list = act in any app.
@@ -95,6 +105,13 @@ class Config:
             d["slot_actions"] = {**defaults.slot_actions, **d["slot_actions"]}
         if "dictation_profiles" not in d:
             d["dictation_profiles"] = list(defaults.dictation_profiles)
+        if not d.get("fx_button_templates"):
+            bundled = defaults.fx_button_templates
+            if not bundled:
+                from .fx_button import default_fx_templates, templates_to_dict
+                d["fx_button_templates"] = templates_to_dict(default_fx_templates())
+        if "button_detector" not in d:
+            d["button_detector"] = defaults.button_detector
         # Migrate legacy single target_app -> target_apps list.
         if not d.get("target_apps") and d.get("target_app"):
             d["target_apps"] = [d["target_app"]]

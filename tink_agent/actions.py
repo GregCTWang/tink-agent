@@ -68,10 +68,13 @@ class ActionRouter:
             return "unmapped"
         if action == "noop":
             return "noop"
-        # Defer the actual keystroke to the main thread; return the action id
-        # now so the caller can emit events / log without waiting.
-        self._dispatch(lambda a=action: self._run(self._perform, a))
+        self.fire_named_action(action)
         return action
+
+    def fire_named_action(self, action: str) -> None:
+        if not action or action in ("noop", "unmapped"):
+            return
+        self._dispatch(lambda a=action: self._run(self._perform, a))
 
     def _run(self, fn, arg) -> None:
         """Execute a keyboard side-effect (on the main thread), trapping errors

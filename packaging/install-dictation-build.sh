@@ -97,6 +97,10 @@ for key in ("tones", "slot_actions"):
         merged[key] = {**defaults[key], **(existing.get(key) or {})}
 if not existing.get("dictation_profiles"):
     merged["dictation_profiles"] = defaults["dictation_profiles"]
+if not existing.get("fx_button_templates"):
+    merged["fx_button_templates"] = defaults.get("fx_button_templates") or {}
+if "button_detector" not in existing:
+    merged["button_detector"] = defaults.get("button_detector", "fxmic")
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(merged, indent=2))
 print(f"Wrote merged config: {path}")

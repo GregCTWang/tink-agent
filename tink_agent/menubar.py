@@ -7,7 +7,9 @@ import time
 import rumps
 from .config import Config, DEFAULT_PATH
 from .audio import AudioCapture, DeviceNotFound, reinitialize as audio_reinitialize
-from .detector import ToneDetector, VoiceGate
+from .detector import VoiceGate
+from .audio_buttons import make_button_detector
+from .frontmost import FrontmostTracker
 from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
 from .engine import Engine, _default_frontmost
@@ -91,9 +93,7 @@ class TinkAgentApp(rumps.App):
 
     def _build_engine(self) -> Engine:
         c = self.config
-        det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
-                           c.tone_debounce_ms, c.sample_rate,
-                           tonality_min=c.tone_tonality_min)
+        buttons = make_button_detector(c)
         vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
                        c.min_utterance_ms, c.sample_rate, c.block_size,
                        c.max_utterance_ms)
@@ -105,15 +105,16 @@ class TinkAgentApp(rumps.App):
             enabled=c.dictation_debug_log,
             path=(c.dictation_debug_path or None),
         )
+        self._frontmost_tracker = FrontmostTracker(_default_frontmost)
         dictation = DictationController(
-            c, router, frontmost_fn=_default_frontmost,
+            c, router, frontmost_fn=self._frontmost_tracker,
             dispatch=_main_thread_dispatch,
             delay_fn=_main_thread_delay,
             on_event=self._on_event,
             logger=self.activity_log,
             debug_logger=self._dictation_debug,
         )
-        return Engine(c, det, vg, tr, router, on_event=self._on_event,
+        return Engine(c, buttons, vg, tr, router, on_event=self._on_event,
                       logger=self.activity_log, dictation=dictation)
 
     def _make_transcriber(self) -> Transcriber:

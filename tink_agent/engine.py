@@ -1,13 +1,15 @@
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
+from .frontmost import FrontmostTracker, is_self_app
+
 
 class Engine:
-    def __init__(self, config, detector, voicegate, transcriber, router,
+    def __init__(self, config, button_detector, voicegate, transcriber, router,
                  on_event=None, submit_fn=None, frontmost_fn=None, logger=None,
                  dictation=None):
         self.config = config
-        self.detector = detector
+        self.button_detector = button_detector
         self.voicegate = voicegate
         self.transcriber = transcriber
         self.router = router
@@ -15,10 +17,8 @@ class Engine:
         self.dictation = dictation
         self.enabled = config.enabled
         self._on_event = on_event or (lambda kind, payload: None)
-        # Optional safety guard: when config.target_app is set, actions/typing
-        # only fire if the frontmost app's name or bundle id contains it.
-        # frontmost_fn() -> str is injectable for tests; defaults to NSWorkspace.
-        self._frontmost_fn = frontmost_fn or _default_frontmost
+        raw_front = frontmost_fn or _default_frontmost
+        self._frontmost = FrontmostTracker(raw_front)
         if submit_fn is not None:
             self._submit = submit_fn
         else:
@@ -27,7 +27,6 @@ class Engine:
 
     @property
     def is_capturing(self) -> bool:
-        """True while an utterance or dictation session is open (menu bar icon)."""
         if getattr(self.voicegate, "active", False):
             return True
         d = self.dictation
@@ -35,11 +34,13 @@ class Engine:
 
     def _front(self) -> str:
         try:
-            return self._frontmost_fn() or ""
-        except Exception:  # noqa: BLE001 — never let the guard crash the path
+            return self._frontmost() or ""
+        except Exception:  # noqa: BLE001
             return ""
 
     def _target_ok(self, front: str) -> bool:
+        if is_self_app(front):
+            return False
         targets = [t.strip().lower()
                    for t in (self.config.target_apps or []) if t and t.strip()]
         if not targets:
@@ -50,18 +51,20 @@ class Engine:
     def handle_block(self, block):
         if not self.enabled:
             return
-        slot = self.detector.process(block)
-        tone_active = self.detector.tone_active
-        metrics = getattr(self.detector, "last_metrics", None)
+        slot = self.button_detector.process(block)
+        button_active = self.button_detector.button_active
+        metrics = self.button_detector.last_metrics
+        detection = getattr(self.button_detector, "last_detection", {})
         front = self._front()
+
         if slot is not None:
             if self.logger:
                 self.logger.tone(slot, front, "detected")
-            if self.dictation and self.dictation.handle_tone(slot):
+            if self.dictation and self.dictation.handle_button_end(slot, detection):
                 self._on_event("tone", slot)
-                self._on_event("action", "dictation_cancel")
+                self._on_event("action", "dictation_end")
                 if self.logger:
-                    self.logger.tone(slot, front, "dictation_cancel")
+                    self.logger.tone(slot, front, f"dictation_end slot{slot}")
             elif self._target_ok(front):
                 action = self.router.fire_slot(slot)
                 self._on_event("tone", slot)
@@ -72,13 +75,14 @@ class Engine:
                 self._on_event("blocked", slot)
                 if self.logger:
                     self.logger.blocked(f"slot{slot}", front)
+
         if self.dictation is not None:
             try:
                 self.dictation.observe_block(
-                    block, tone_active, slot=slot, tone_metrics=metrics)
+                    block, button_active, slot=slot, tone_metrics=metrics)
             except Exception:  # noqa: BLE001
                 self.dictation.force_release("error")
-        utterance = self.voicegate.process(block, tone_active)
+        utterance = self.voicegate.process(block, button_active)
         if utterance is not None:
             self._submit(lambda u=utterance: self._handle_utterance(u))
 
@@ -105,7 +109,6 @@ class Engine:
 
 
 def _default_frontmost() -> str:
-    """Frontmost app identity (name + bundle id) via AppKit, or "" if unavailable."""
     try:
         from AppKit import NSWorkspace
         app = NSWorkspace.sharedWorkspace().frontmostApplication()

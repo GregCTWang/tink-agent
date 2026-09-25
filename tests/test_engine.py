@@ -1,6 +1,7 @@
 import numpy as np
 from tink_agent.config import Config
-from tink_agent.detector import ToneDetector, VoiceGate
+from tink_agent.detector import VoiceGate
+from tink_agent.audio_buttons import make_button_detector
 from tink_agent.actions import ActionRouter
 from tink_agent.engine import Engine
 
@@ -37,13 +38,12 @@ class FakeLogger:
 
 def _engine(kb, events, target_app="", frontmost="Terminal com.apple.Terminal",
             logger=None):
-    c = Config(target_apps=[target_app] if target_app else [])
-    det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
-                       c.tone_debounce_ms, c.sample_rate)
+    c = Config(target_apps=[target_app] if target_app else [], button_detector="tone")
+    buttons = make_button_detector(c)
     vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
                    c.min_utterance_ms, c.sample_rate, c.block_size)
     router = ActionRouter(c.slot_actions, keyboard=kb)
-    return Engine(c, det, vg, FakeTranscriber(), router,
+    return Engine(c, buttons, vg, FakeTranscriber(), router,
                   on_event=lambda k, p: events.append((k, p)),
                   submit_fn=lambda fn: fn(),  # synchronous
                   frontmost_fn=lambda: frontmost, logger=logger)
@@ -105,12 +105,11 @@ def test_target_app_gate_blocks_nonmatching_frontmost():
 def test_target_apps_matches_any_in_list():
     from tink_agent.config import Config as Cfg
     kb, events = FakeKeyboard(), []
-    c = Cfg(target_apps=["com.apple.Terminal", "com.googlecode.iterm2"])
-    det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
-                       c.tone_debounce_ms, c.sample_rate)
+    c = Cfg(target_apps=["com.apple.Terminal", "com.googlecode.iterm2"], button_detector="tone")
+    buttons = make_button_detector(c)
     vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
                    c.min_utterance_ms, c.sample_rate, c.block_size)
-    eng = Engine(c, det, vg, FakeTranscriber(), ActionRouter(c.slot_actions, keyboard=kb),
+    eng = Engine(c, buttons, vg, FakeTranscriber(), ActionRouter(c.slot_actions, keyboard=kb),
                  on_event=lambda k, p: events.append((k, p)), submit_fn=lambda fn: fn(),
                  frontmost_fn=lambda: "iTerm com.googlecode.iterm2")
     eng.handle_block(_tone_block())
