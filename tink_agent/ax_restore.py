@@ -22,6 +22,12 @@ class FocusSnapshot:
     description: str = ""
 
 
+@dataclass(frozen=True)
+class SnapshotAttempt:
+    snapshot: FocusSnapshot | None
+    failure: str = ""
+
+
 def element_identity(pid: int, role: str, subrole: str, pos: tuple[float, float, float, float]) -> str:
     x, y, w, h = pos
     return f"{pid}:{role}:{subrole}:{x:.0f},{y:.0f},{w:.0f},{h:.0f}"

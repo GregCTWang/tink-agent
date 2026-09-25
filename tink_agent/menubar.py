@@ -10,7 +10,7 @@ from .config import Config, DEFAULT_PATH
 from .audio import AudioCapture, DeviceNotFound, reinitialize as audio_reinitialize
 from .detector import VoiceGate
 from .audio_buttons import make_button_detector
-from .frontmost import FrontmostTracker
+from .frontmost import FrontmostTracker, default_frontmost_pid
 from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
 from .engine import Engine, _default_frontmost
@@ -109,11 +109,21 @@ class TinkAgentApp(rumps.App):
             enabled=c.dictation_debug_log,
             path=(c.dictation_debug_path or None),
         )
-        self._frontmost_tracker = FrontmostTracker(_default_frontmost)
+        from .ax_macos import create_mac_ax_port, log_ax_trust_at_startup, prepare_electron_ax_for_pid
+
+        self._frontmost_tracker = FrontmostTracker(
+            _default_frontmost,
+            default_frontmost_pid,
+            prepare_electron_ax_for_pid,
+        )
+        log_ax_trust_at_startup(self.activity_log)
 
         def _ax_port_factory(router, dispatch):
-            from .ax_macos import create_mac_ax_port
-            return create_mac_ax_port(router, dispatch)
+            return create_mac_ax_port(
+                router,
+                dispatch,
+                frontmost_pid_fn=lambda: self._frontmost_tracker.last_pid,
+            )
 
         dictation = DictationController(
             c, router, frontmost_fn=self._frontmost_tracker,
@@ -125,7 +135,8 @@ class TinkAgentApp(rumps.App):
             ax_port_factory=_ax_port_factory,
         )
         eng = Engine(c, buttons, vg, tr, router, on_event=self._on_event,
-                     logger=self.activity_log, dictation=dictation)
+                     logger=self.activity_log, dictation=dictation,
+                     frontmost_fn=self._frontmost_tracker)
         self._knob_monitor = KnobSerialMonitor(
             c,
             on_line=dictation.on_serial_line,

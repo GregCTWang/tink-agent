@@ -17,8 +17,12 @@ class Engine:
         self.dictation = dictation
         self.enabled = config.enabled
         self._on_event = on_event or (lambda kind, payload: None)
-        raw_front = frontmost_fn or _default_frontmost
-        self._frontmost = FrontmostTracker(raw_front)
+        if frontmost_fn is None:
+            self._frontmost = FrontmostTracker(_default_frontmost)
+        elif isinstance(frontmost_fn, FrontmostTracker):
+            self._frontmost = frontmost_fn
+        else:
+            self._frontmost = FrontmostTracker(frontmost_fn)
         if submit_fn is not None:
             self._submit = submit_fn
         else:

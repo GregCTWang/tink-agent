@@ -1,6 +1,7 @@
 from tink_agent.ax_restore import (
     CancelRestoreEngine,
     FocusSnapshot,
+    SnapshotAttempt,
     insertion_span,
     is_editor_like,
     is_safe_snapshot_target,
@@ -16,7 +17,7 @@ class FakeAxPort:
         self.select_all = False
 
     def snapshot_focused(self):
-        return self.focused
+        return SnapshotAttempt(self.focused, "")
 
     def read_focused(self):
         return self.focused

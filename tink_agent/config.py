@@ -6,6 +6,46 @@ from pathlib import Path
 from .dictation import DEFAULT_PROFILES
 
 DEFAULT_PATH = Path.home() / ".tink-agent" / "config.json"
+
+PROFILE_BACKFILL_KEYS = (
+    "mode",
+    "keys",
+    "auto_send",
+    "send_delay_ms",
+    "cancel_escape",
+    "restore_on_cancel",
+    "cancel_fallback",
+)
+
+
+def merge_dictation_profiles(existing: list, defaults: list | None = None) -> list:
+    """Backfill missing per-profile keys from defaults matched by `match`."""
+    defaults = defaults if defaults is not None else DEFAULT_PROFILES
+    if not existing:
+        return [dict(p) for p in defaults]
+    by_match: dict[str, dict] = {}
+    for p in defaults:
+        m = str(p.get("match") or "").strip().lower()
+        if m:
+            by_match[m] = p
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for ep in existing:
+        p = dict(ep)
+        m = str(p.get("match") or "").strip().lower()
+        if m:
+            seen.add(m)
+            d = by_match.get(m)
+            if d:
+                for key in PROFILE_BACKFILL_KEYS:
+                    if key not in p and key in d:
+                        p[key] = d[key]
+        merged.append(p)
+    for d in defaults:
+        m = str(d.get("match") or "").strip().lower()
+        if m and m not in seen:
+            merged.append(dict(d))
+    return merged
 MW_BINARY = "/Applications/MacWhisper.app/Contents/MacOS/mw"
 
 
@@ -50,11 +90,14 @@ class Config:
     dictation_min_toggle_gap_ms: int = 400
     cancel_restore_timeout_ms: int = 4000
     cancel_restore_settle_ms: int = 400
+    cancel_fallback_delay_ms: int = 1500
     knob_serial_enabled: bool = True
     knob_serial_port: str = ""  # auto: TE EP-2350 CDC /dev/cu.usbmodemEP*
     knob_poll_ms: int = 10
     knob_start_debounce_ms: int = 150
-    dictation_profiles: list = field(default_factory=lambda: list(DEFAULT_PROFILES))
+    dictation_profiles: list = field(
+        default_factory=lambda: [dict(p) for p in DEFAULT_PROFILES]
+    )
     # Per-slot action after button ends session (defaults to slot_actions for 1-4).
     dictation_end_actions: dict = field(default_factory=dict)
     dictation_debug_log: bool = False
@@ -114,6 +157,11 @@ class Config:
             d["slot_actions"] = {**defaults.slot_actions, **d["slot_actions"]}
         if "dictation_profiles" not in d:
             d["dictation_profiles"] = list(defaults.dictation_profiles)
+        else:
+            d["dictation_profiles"] = merge_dictation_profiles(
+                list(d.get("dictation_profiles") or []),
+                list(defaults.dictation_profiles),
+            )
         if not d.get("fx_button_templates"):
             bundled = defaults.fx_button_templates
             if not bundled:

@@ -86,7 +86,7 @@ import json
 import sys
 from pathlib import Path
 
-from tink_agent.config import Config
+from tink_agent.config import Config, merge_dictation_profiles
 
 path = Path(sys.argv[1])
 if path.exists():
@@ -99,8 +99,10 @@ merged = {**defaults, **existing}
 for key in ("tones", "slot_actions"):
     if key in defaults:
         merged[key] = {**defaults[key], **(existing.get(key) or {})}
-if not existing.get("dictation_profiles"):
-    merged["dictation_profiles"] = defaults["dictation_profiles"]
+merged["dictation_profiles"] = merge_dictation_profiles(
+    list(existing.get("dictation_profiles") or merged.get("dictation_profiles") or []),
+    list(defaults.get("dictation_profiles") or []),
+)
 if not existing.get("fx_button_templates"):
     merged["fx_button_templates"] = defaults.get("fx_button_templates") or {}
 if "button_detector" not in existing:
@@ -109,7 +111,7 @@ for key in (
     "knob_serial_enabled", "knob_poll_ms", "knob_start_debounce_ms",
     "dictation_release_action", "dictation_idle_cap_ms",
     "dictation_min_toggle_gap_ms", "cancel_restore_timeout_ms",
-    "cancel_restore_settle_ms",
+    "cancel_restore_settle_ms", "cancel_fallback_delay_ms",
 ):
     if key not in existing:
         merged[key] = defaults.get(key)

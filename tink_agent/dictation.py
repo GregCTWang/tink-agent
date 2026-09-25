@@ -12,6 +12,7 @@ import numpy as np
 from .ax_restore import (
     CancelRestoreEngine,
     FocusSnapshot,
+    SnapshotAttempt,
     is_safe_snapshot_target,
 )
 
@@ -23,6 +24,7 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": False,
+        "cancel_fallback": "none",
     },
     {
         "match": "Claude",
@@ -31,6 +33,7 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": True,
+        "cancel_fallback": "none",
     },
     {
         "match": "Cursor",
@@ -40,6 +43,7 @@ DEFAULT_PROFILES: list[dict] = [
         "send_delay_ms": 200,
         "cancel_escape": True,
         "restore_on_cancel": True,
+        "cancel_fallback": "none",
     },
 ]
 
@@ -469,9 +473,12 @@ class DictationController:
         if port is None:
             self._log_restore("restore skipped reason=ax_unavailable")
             return
-        raw = port.snapshot_focused()
+        attempt = port.snapshot_focused()
+        raw = attempt.snapshot if isinstance(attempt, SnapshotAttempt) else attempt
+        fail_detail = attempt.failure if isinstance(attempt, SnapshotAttempt) else ""
         if raw is None:
-            self._log_restore("restore skipped reason=unreadable")
+            suffix = f" {fail_detail}".rstrip()
+            self._log_restore(f"restore skipped reason=unreadable{suffix}")
             return
         match_name = str(profile.get("match") or "")
         if not is_safe_snapshot_target(raw, match_name):
@@ -505,6 +512,23 @@ class DictationController:
             engine.restore_after_cancel(snap, match_name, self._log_restore)
 
         self._delay(350, lambda: self._dispatch(run))
+
+    def _schedule_cancel_fallback(self, profile: dict, *, stop_delay_ms: int = 0) -> None:
+        fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
+        if fallback in ("", "none"):
+            return
+        if fallback == "undo":
+            delay_ms = int(
+                profile.get("cancel_fallback_delay_ms")
+                or getattr(self.config, "cancel_fallback_delay_ms", 1500)
+            )
+            total = stop_delay_ms + delay_ms
+
+            def undo() -> None:
+                self.router.dictation_tap(["cmd", "z"])
+                self._log_keys("cmd+z (cancel_fallback)")
+
+            self._delay(total, lambda: self._dispatch(undo))
 
     def _begin_session(self) -> None:
         front = self._front()
@@ -571,22 +595,38 @@ class DictationController:
                 self._log_keys(f"{label} (stop)")
             self._session_toggle_tap_at = None
 
+        fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
+
         def dispatch_stop() -> None:
             self._dispatch(stop_keys)
+
+        def esc_then_stop() -> None:
+            def run() -> None:
+                self.router.dictation_tap(["esc"])
+                self._log_keys("escape (cancel_fallback)")
+                stop_keys()
+
+            self._dispatch(run)
 
         self._on_event("dictation", ("stop", reason))
         self._log_dictation(
             f"stop reason={reason} profile={match_name} knob_source={self.knob_source}")
 
+        stop_fn = esc_then_stop if cancelled and fallback == "escape_before_stop" else dispatch_stop
+        stop_delay_ms = 0
         if mode == "toggle" and self._session_toggle_tap_at is not None:
             elapsed_ms = (self._mono() - self._session_toggle_tap_at) * 1000.0
             wait_ms = int(max(0, min_gap_ms - elapsed_ms))
+            stop_delay_ms = wait_ms
             if wait_ms > 0:
-                self._delay(wait_ms, dispatch_stop)
+                self._delay(wait_ms, stop_fn)
             else:
-                dispatch_stop()
+                stop_fn()
         else:
-            dispatch_stop()
+            stop_fn()
+
+        if cancelled:
+            self._schedule_cancel_fallback(profile, stop_delay_ms=stop_delay_ms)
 
         if cancelled and profile.get("restore_on_cancel") and restore_snap is not None:
             self._schedule_cancel_restore(profile, restore_snap)
