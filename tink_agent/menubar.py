@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import atexit
+import signal
 import subprocess
 import sys
 import time
@@ -364,5 +365,12 @@ def _set_regular_policy():
 
 def main():
     app = TinkAgentApp()
+
+    def _shutdown_for_signal(_signum, _frame) -> None:
+        app._cleanup_dictation()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown_for_signal)
+
     _set_regular_policy()
     app.run()

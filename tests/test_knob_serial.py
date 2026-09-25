@@ -73,6 +73,28 @@ class FakeSerial:
         self.closed = True
 
 
+class SilentUntilInterruptSerial:
+    """Simulates a device stuck in the poll loop until Ctrl-C."""
+
+    def __init__(self):
+        self.writes: list[bytes] = []
+        self._prompt_ready = False
+
+    def read(self, n):
+        if self._prompt_ready:
+            self._prompt_ready = False
+            return b">>> "
+        return b""
+
+    def write(self, data):
+        self.writes.append(bytes(data))
+        if b"\x03" in data:
+            self._prompt_ready = True
+
+    def flush(self):
+        pass
+
+
 def _speech():
     return np.full(800, 200, dtype=np.int16)
 
@@ -256,6 +278,29 @@ def test_exec_payload_unescaped_compiles():
 
 def test_resolve_port_hint():
     assert resolve_knob_port("/dev/cu.usbmodemEPTEST") == "/dev/cu.usbmodemEPTEST"
+
+
+def test_repl_prompt_sends_ctrl_c_when_silent():
+    clock = [0.0]
+
+    def mono():
+        return clock[0]
+
+    def sleep(dt):
+        clock[0] += dt
+
+    ser = SilentUntilInterruptSerial()
+    mon = KnobSerialMonitor(
+        Config(),
+        on_line=lambda _t: None,
+        sleep_fn=sleep,
+        monotonic_fn=mono,
+    )
+    buf = mon._wait_for_repl_prompt(ser, b"", deadline=10.0)
+    assert b">>> " in buf
+    joined = b"".join(ser.writes)
+    assert joined.count(b"\x03") == 2
+    assert b"\r" in joined
 
 
 def test_monitor_parses_k_g_tokens():
