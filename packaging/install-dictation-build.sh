@@ -76,6 +76,10 @@ rm -rf "$APP"
 mkdir -p "$(dirname "$APP")"
 cp -a "$SRC/." "$APP/"
 
+VENV_DIR="$(dirname "$VENV_PY")"
+echo "Installing Python dependencies into $VENV_DIR"
+"$VENV_PY" -m pip install -q -r "$APP/requirements.txt"
+
 echo "Merging new config keys (existing values preserved)"
 PYTHONPATH="$APP" "$VENV_PY" - "$CONFIG" <<'PY'
 import json

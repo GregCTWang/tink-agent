@@ -123,6 +123,7 @@ class TinkAgentApp(rumps.App):
             c,
             on_line=dictation.on_serial_line,
             on_link=lambda ok, msg: dictation.set_serial_link(ok, msg),
+            on_debug=dictation.debug_logger.log_serial,
         )
         self._knob_monitor.start()
         return eng

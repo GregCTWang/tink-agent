@@ -58,23 +58,40 @@ class Engine:
         front = self._front()
 
         if slot is not None:
-            if self.logger:
+            serial_mode = (
+                self.dictation is not None and self.dictation.knob_source == "serial"
+            )
+            if serial_mode:
+                if self.logger:
+                    self.logger.tone(slot, front, "audio_detected_serial_ignored")
+                if (
+                    self.dictation.try_serial_grey_audio_action(slot)
+                    and self._target_ok(front)
+                ):
+                    action = self.router.fire_slot(slot)
+                    self._on_event("tone", slot)
+                    self._on_event("action", action)
+                    if self.logger:
+                        self.logger.action(slot, action, front)
+                        self.logger.tone(slot, front, "serial_grey_audio")
+            elif self.logger:
                 self.logger.tone(slot, front, "detected")
-            if self.dictation and self.dictation.handle_button_end(slot, detection):
-                self._on_event("tone", slot)
-                self._on_event("action", "dictation_end")
-                if self.logger:
-                    self.logger.tone(slot, front, f"dictation_end slot{slot}")
-            elif self._target_ok(front):
-                action = self.router.fire_slot(slot)
-                self._on_event("tone", slot)
-                self._on_event("action", action)
-                if self.logger:
-                    self.logger.action(slot, action, front)
-            else:
-                self._on_event("blocked", slot)
-                if self.logger:
-                    self.logger.blocked(f"slot{slot}", front)
+            if not serial_mode:
+                if self.dictation and self.dictation.handle_button_end(slot, detection):
+                    self._on_event("tone", slot)
+                    self._on_event("action", "dictation_end")
+                    if self.logger:
+                        self.logger.tone(slot, front, f"dictation_end slot{slot}")
+                elif self._target_ok(front):
+                    action = self.router.fire_slot(slot)
+                    self._on_event("tone", slot)
+                    self._on_event("action", action)
+                    if self.logger:
+                        self.logger.action(slot, action, front)
+                else:
+                    self._on_event("blocked", slot)
+                    if self.logger:
+                        self.logger.blocked(f"slot{slot}", front)
 
         if self.dictation is not None:
             try:

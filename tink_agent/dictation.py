@@ -209,6 +209,8 @@ class DictationController:
         self._skip_release_send = False
         self._idle_ms = 0.0
         self._last_activity_mono = self._mono()
+        self._grey_armed_at: float | None = None
+        self._grey_audio_window_s = 0.3
 
     @property
     def knob_source(self) -> str:
@@ -254,7 +256,6 @@ class DictationController:
         return self._gate.active
 
     def on_serial_line(self, token: str) -> None:
-        self.debug_logger.log_serial(token)
         if token == "HB":
             return
         if token == "K1":
@@ -280,6 +281,8 @@ class DictationController:
                 self._skip_release_send = True
                 self._gate.reset()
                 self._end_session(reason="grey_cancel", post_action=None, cancelled=True)
+            else:
+                self._grey_armed_at = self._mono()
             return
 
     def observe_block(
@@ -329,6 +332,18 @@ class DictationController:
                 if self._idle_ms >= cap:
                     self._gate.reset()
                     self._end_session(reason="idle_cap", post_action=None)
+
+    def try_serial_grey_audio_action(self, slot: int) -> bool:
+        """True if serial G0 recently armed and this audio slot may fire (outside session)."""
+        if self.knob_source != "serial" or self._gate.active:
+            return False
+        if self._grey_armed_at is None:
+            return False
+        if self._mono() - self._grey_armed_at > self._grey_audio_window_s:
+            self._grey_armed_at = None
+            return False
+        self._grey_armed_at = None
+        return True
 
     def handle_button_end(self, slot: int, detection: dict | None = None) -> bool:
         if not self.uses_audio_button_end():

@@ -8,7 +8,13 @@ from tink_agent.actions import ActionRouter
 from tink_agent.dictation import DictationController
 from tink_agent.engine import Engine
 from tink_agent.audio_buttons import make_button_detector
-from tink_agent.knob_serial import KnobSerialMonitor, resolve_knob_port, _exec_payload
+from tink_agent.knob_serial import (
+    KnobSerialMonitor,
+    _exec_payload,
+    _poll_loop_source,
+    resolve_knob_port,
+    unescape_exec_literal,
+)
 
 
 class FakeKey:
@@ -188,6 +194,23 @@ def test_exec_payload_is_read_only_poll():
     assert b"vfs" not in payload
 
 
+def test_exec_payload_single_line_no_raw_lf():
+    payload = _exec_payload(_poll_loop_source(10))
+    body = payload[:-2]
+    assert b"\n" not in body
+    assert b"\\n" in body
+    src = unescape_exec_literal(payload)
+    compile(src, "<poll>", "exec")
+    assert "ui.sw(4)" in src
+    assert "time.sleep_ms(10)" in src
+
+
+def test_exec_payload_unescaped_compiles():
+    payload = _exec_payload("import ui\nwhile True:\n pass\n")
+    src = unescape_exec_literal(payload)
+    compile(src, "<snippet>", "exec")
+
+
 def test_resolve_port_hint():
     assert resolve_knob_port("/dev/cu.usbmodemEPTEST") == "/dev/cu.usbmodemEPTEST"
 
@@ -195,7 +218,31 @@ def test_resolve_port_hint():
 def test_monitor_parses_k_g_tokens():
     lines = []
     mon = KnobSerialMonitor(Config(), on_line=lines.append)
-    mon._handle_line("noise K1 trailing")
-    mon._handle_line("G0")
+    buf, _ = mon._drain_lines(b"noise K1 trailing\nG0\n")
+    assert buf == b""
     assert lines == ["K1", "G0"]
     assert mon.knob_held is True
+
+
+def _tone_block(freq=1500):
+    sr, block = 16000, 800
+    t = np.arange(0, block / sr, 1 / sr)[:block]
+    return (np.sin(2 * np.pi * freq * t) * 12000).astype(np.int16)
+
+
+def test_serial_linked_audio_tone_ignored_without_grey():
+    kb = FakeKeyboard()
+    eng, d, _, _ = _setup(kb)
+    d.knob_held = False
+    eng.handle_block(_tone_block(2300))
+    assert ("press", "ESC") not in kb.events
+    assert ("press", "ENTER") not in kb.events
+
+
+def test_serial_grey_then_audio_fires_slot_action():
+    kb = FakeKeyboard()
+    eng, d, _, _ = _setup(kb)
+    d.knob_held = False
+    d.on_serial_line("G0")
+    eng.handle_block(_tone_block(1500))
+    assert ("press", "ENTER") in kb.events
