@@ -14,6 +14,7 @@ from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
 from .engine import Engine, _default_frontmost
 from .dictation import DictationController, DictationDebugLogger
+from .knob_serial import KnobSerialMonitor
 from .activity_log import ActivityLogger, DEFAULT_LOG
 from . import launchagent
 
@@ -87,6 +88,8 @@ class TinkAgentApp(rumps.App):
 
     def _cleanup_dictation(self):
         try:
+            if getattr(self, "_knob_monitor", None) is not None:
+                self._knob_monitor.stop()
             self.engine.release_dictation("quit")
         except Exception:  # noqa: BLE001
             pass
@@ -114,8 +117,15 @@ class TinkAgentApp(rumps.App):
             logger=self.activity_log,
             debug_logger=self._dictation_debug,
         )
-        return Engine(c, buttons, vg, tr, router, on_event=self._on_event,
-                      logger=self.activity_log, dictation=dictation)
+        eng = Engine(c, buttons, vg, tr, router, on_event=self._on_event,
+                     logger=self.activity_log, dictation=dictation)
+        self._knob_monitor = KnobSerialMonitor(
+            c,
+            on_line=dictation.on_serial_line,
+            on_link=lambda ok, msg: dictation.set_serial_link(ok, msg),
+        )
+        self._knob_monitor.start()
+        return eng
 
     def _make_transcriber(self) -> Transcriber:
         cmd, mode = resolve_stt(self.config)

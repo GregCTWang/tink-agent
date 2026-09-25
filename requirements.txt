@@ -1,3 +1,4 @@
+pyserial>=3.5
 sounddevice>=0.4.6
 numpy>=1.26
 pynput>=1.7.6

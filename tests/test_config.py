@@ -102,6 +102,9 @@ def test_dictation_defaults():
     assert c.dictation_enabled is True
     assert c.dictation_onset_rms == 90.0
     assert c.button_detector == "fxmic"
+    assert c.knob_serial_enabled is True
+    assert c.dictation_idle_cap_ms == 180000
+    assert c.dictation_release_action == "enter"
     assert c.fx_button_similarity_min == 0.72
     assert c.dictation_debug_log is False
     assert len(c.dictation_profiles) >= 3

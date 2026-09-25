@@ -62,6 +62,9 @@ class ActivityLogger:
     def tone(self, slot: int, app=None, detail: str = "") -> None:
         self._write("tone", app, f"slot{slot}{(' ' + detail) if detail else ''}")
 
+    def knob(self, app, detail: str) -> None:
+        self._write("knob", app, detail)
+
     def close(self) -> None:
         with self._lock:
             if self._fh is not None:

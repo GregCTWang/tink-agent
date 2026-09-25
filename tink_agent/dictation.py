@@ -1,7 +1,8 @@
-"""Push-to-talk dictation: voice onset starts app shortcuts; grey button ends."""
+"""Push-to-talk dictation: serial knob (preferred) or audio fallback."""
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -69,24 +70,21 @@ def end_action_for_slot(config, slot: int, router) -> str:
 
 @dataclass
 class DictationOnsetGate:
-    """Voice onset only; no silence-based session end."""
+    """Voice onset; optional knob-held gate when serial is linked."""
 
     onset_rms: float
     onset_min_ms: int
     sample_rate: int
     block_size: int
     onset_window_samples: int
-    max_session_ms: int
 
     _state: str = field(default="idle", init=False)
     _onset_blocks: int = field(default=0, init=False)
-    _session_blocks: int = field(default=0, init=False)
-    last_stop_reason: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
         block_ms = 1000.0 * self.block_size / self.sample_rate
         self._onset_min_blocks = max(1, int(round(self.onset_min_ms / block_ms)))
-        self._max_session_blocks = max(1, int(round(self.max_session_ms / block_ms)))
+        self._block_ms = block_ms
 
     @property
     def active(self) -> bool:
@@ -95,14 +93,22 @@ class DictationOnsetGate:
     def reset(self) -> None:
         self._state = "idle"
         self._onset_blocks = 0
-        self._session_blocks = 0
-        self.last_stop_reason = ""
 
-    def process(self, block: np.ndarray, button_active: bool) -> str | None:
+    def process(
+        self,
+        block: np.ndarray,
+        *,
+        button_active: bool,
+        knob_held: bool,
+        require_knob: bool,
+    ) -> str | None:
         onset_rms = block_rms(block, 0, min(self.onset_window_samples, block.size))
 
         if self._state == "idle":
             if button_active:
+                self._onset_blocks = 0
+                return None
+            if require_knob and not knob_held:
                 self._onset_blocks = 0
                 return None
             if onset_rms >= self.onset_rms:
@@ -110,17 +116,10 @@ class DictationOnsetGate:
                 if self._onset_blocks >= self._onset_min_blocks:
                     self._state = "active"
                     self._onset_blocks = 0
-                    self._session_blocks = 0
                     return "start"
             else:
                 self._onset_blocks = 0
             return None
-
-        self._session_blocks += 1
-        if self._session_blocks >= self._max_session_blocks:
-            self._state = "idle"
-            self.last_stop_reason = "max"
-            return "max"
         return None
 
 
@@ -156,6 +155,8 @@ class DictationDebugLogger:
         button_active: bool,
         slot: int | None,
         metrics: dict | None,
+        knob_held: bool,
+        knob_source: str,
     ) -> None:
         if not self.enabled:
             return
@@ -164,10 +165,13 @@ class DictationDebugLogger:
             return
         m = metrics or {}
         self._write(
-            f"block rms={rms:.1f} btn={int(button_active)} slot={slot or '-'} "
-            f"sim={m.get('similarity', '-')} sq={m.get('square_score', '-')} "
-            f"session={int(session_active)}"
+            f"block rms={rms:.1f} knob={int(knob_held)} src={knob_source} "
+            f"btn={int(button_active)} slot={slot or '-'} "
+            f"sim={m.get('similarity', '-')} session={int(session_active)}"
         )
+
+    def log_serial(self, line: str) -> None:
+        self._write(f"serial {line}")
 
     def log_detection(self, detail: str) -> None:
         self._write(f"detect {detail}")
@@ -187,6 +191,7 @@ class DictationController:
         on_event: Callable[[str, object], None] | None = None,
         logger=None,
         debug_logger: DictationDebugLogger | None = None,
+        monotonic_fn: Callable[[], float] | None = None,
     ):
         self.config = config
         self.router = router
@@ -196,8 +201,23 @@ class DictationController:
         self._on_event = on_event or (lambda _k, _p: None)
         self.logger = logger
         self.debug_logger = debug_logger or DictationDebugLogger(False)
+        self._mono = monotonic_fn or time.monotonic
         self._gate = self._make_gate()
         self._profile: dict | None = None
+        self._serial_linked = False
+        self.knob_held = False
+        self._skip_release_send = False
+        self._idle_ms = 0.0
+        self._last_activity_mono = self._mono()
+
+    @property
+    def knob_source(self) -> str:
+        if self._serial_linked and getattr(self.config, "knob_serial_enabled", True):
+            return "serial"
+        return "audio_fallback"
+
+    def uses_audio_button_end(self) -> bool:
+        return self.knob_source == "audio_fallback"
 
     def _make_gate(self) -> DictationOnsetGate:
         c = self.config
@@ -211,7 +231,6 @@ class DictationController:
             sample_rate=c.sample_rate,
             block_size=c.block_size,
             onset_window_samples=window_samples,
-            max_session_ms=c.dictation_max_session_ms,
         )
 
     def reload_config(self) -> None:
@@ -222,9 +241,46 @@ class DictationController:
         if getattr(self.config, "dictation_debug_path", ""):
             self.debug_logger.path = Path(self.config.dictation_debug_path)
 
+    def set_serial_link(self, connected: bool, detail: str = "") -> None:
+        self._serial_linked = connected
+        src = self.knob_source
+        msg = f"knob_source={src} link={int(connected)} {detail}".strip()
+        self._log_knob(msg)
+        if not connected:
+            self.knob_held = False
+
     @property
     def is_active(self) -> bool:
         return self._gate.active
+
+    def on_serial_line(self, token: str) -> None:
+        self.debug_logger.log_serial(token)
+        if token == "HB":
+            return
+        if token == "K1":
+            self.knob_held = True
+            self._idle_ms = 0.0
+            self._last_activity_mono = self._mono()
+            self._log_knob("knob_down")
+            return
+        if token == "K0":
+            self.knob_held = False
+            self._log_knob("knob_up")
+            if self._skip_release_send:
+                self._skip_release_send = False
+                return
+            if self._gate.active:
+                self._gate.reset()
+                action = getattr(self.config, "dictation_release_action", "enter")
+                self._end_session(reason="release_send", post_action=action)
+            return
+        if token == "G0":
+            self._log_knob("grey_press")
+            if self._gate.active and self.knob_held:
+                self._skip_release_send = True
+                self._gate.reset()
+                self._end_session(reason="grey_cancel", post_action=None, cancelled=True)
+            return
 
     def observe_block(
         self,
@@ -237,6 +293,8 @@ class DictationController:
         if not getattr(self.config, "dictation_enabled", True):
             return
         full_rms = block_rms(block)
+        src = self.knob_source
+        require_knob = src == "serial"
         self.debug_logger.rms_min = getattr(self.config, "dictation_debug_rms_min", 500.0)
         self.debug_logger.log_block(
             session_active=self._gate.active,
@@ -244,24 +302,46 @@ class DictationController:
             button_active=button_active,
             slot=slot,
             metrics=tone_metrics,
+            knob_held=self.knob_held,
+            knob_source=src,
         )
-        transition = self._gate.process(block, button_active)
+        if full_rms >= self.config.dictation_onset_rms:
+            self._last_activity_mono = self._mono()
+            self._idle_ms = 0.0
+
+        transition = self._gate.process(
+            block,
+            button_active=button_active,
+            knob_held=self.knob_held,
+            require_knob=require_knob,
+        )
         if transition == "start":
+            self._skip_release_send = False
             self._begin_session()
-        elif transition == "max":
-            self._end_session(reason="max", post_action=None)
+
+        if self._gate.active and src == "serial":
+            block_ms = self._gate._block_ms
+            if self.knob_held or full_rms >= self.config.dictation_onset_rms:
+                self._idle_ms = 0.0
+            else:
+                self._idle_ms += block_ms
+                cap = getattr(self.config, "dictation_idle_cap_ms", 180000)
+                if self._idle_ms >= cap:
+                    self._gate.reset()
+                    self._end_session(reason="idle_cap", post_action=None)
 
     def handle_button_end(self, slot: int, detection: dict | None = None) -> bool:
+        if not self.uses_audio_button_end():
+            return False
         if not self._gate.active or slot is None or slot > 4:
             return False
         det = detection or {}
         self.debug_logger.log_detection(
-            f"slot={slot} sim={det.get('similarity', '-')} rms={det.get('rms', '-')} "
-            f"dur_ms={det.get('duration_ms', '-')} ended_session=1"
+            f"slot={slot} sim={det.get('similarity', '-')} ended_session=1 fallback=1"
         )
         action = end_action_for_slot(self.config, slot, self.router)
         self._gate.reset()
-        self._end_session(reason=f"button_slot_{slot}", post_action=action)
+        self._end_session(reason=f"fallback_button_slot_{slot}", post_action=action)
         return True
 
     def force_release(self, reason: str = "cleanup") -> None:
@@ -281,6 +361,11 @@ class DictationController:
             self.logger.dictation(self._front(), detail)
         self.debug_logger.log_session(detail)
 
+    def _log_knob(self, detail: str) -> None:
+        if self.logger is not None:
+            self.logger.knob(self._front(), detail)
+        self.debug_logger.log_session(f"knob {detail}")
+
     def _begin_session(self) -> None:
         front = self._front()
         profile = match_profile(front, self.config.dictation_profiles or [])
@@ -293,15 +378,23 @@ class DictationController:
         mode = profile.get("mode", "toggle")
         match_name = profile.get("match", "")
         self._on_event("dictation", ("start", match_name, mode))
-        self._log_dictation(f"start profile={match_name} mode={mode}")
+        self._log_dictation(
+            f"start profile={match_name} mode={mode} knob_source={self.knob_source}")
         if mode == "hold":
             self._dispatch(lambda: self.router.dictation_press(list(profile.get("keys") or [])))
         else:
             self._dispatch(lambda: self.router.dictation_tap(list(profile.get("keys") or [])))
 
-    def _end_session(self, *, reason: str, post_action: str | None) -> None:
+    def _end_session(
+        self,
+        *,
+        reason: str,
+        post_action: str | None,
+        cancelled: bool = False,
+    ) -> None:
         profile = self._profile
         self._profile = None
+        self._idle_ms = 0.0
         if profile is None:
             self.router.dictation_release_all()
             return
@@ -312,6 +405,8 @@ class DictationController:
         match_name = profile.get("match", "")
 
         def stop_keys() -> None:
+            if cancelled and profile.get("cancel_escape"):
+                self.router.dictation_tap(["esc"])
             if mode == "hold":
                 self.router.dictation_release_all()
             else:
@@ -319,9 +414,10 @@ class DictationController:
 
         self._dispatch(stop_keys)
         self._on_event("dictation", ("stop", reason))
-        self._log_dictation(f"stop reason={reason} profile={match_name}")
+        self._log_dictation(
+            f"stop reason={reason} profile={match_name} knob_source={self.knob_source}")
 
-        if post_action and post_action not in ("noop", "unmapped"):
+        if post_action and post_action not in ("noop", "unmapped") and not cancelled:
             def post() -> None:
                 self.router.fire_named_action(post_action)
 

@@ -34,6 +34,7 @@ class FakeLogger:
     def blocked(self, what, app=None): self.calls.append(("blocked", what, app))
     def tone(self, slot, app=None, detail=""): self.calls.append(("tone", slot, app, detail))
     def dictation(self, app, detail): self.calls.append(("dictation", app, detail))
+    def knob(self, app, detail): self.calls.append(("knob", app, detail))
 
 
 def _engine(kb, events, target_app="", frontmost="Terminal com.apple.Terminal",

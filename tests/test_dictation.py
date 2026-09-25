@@ -85,11 +85,13 @@ def test_match_profile_substring():
 
 
 def test_silence_does_not_end_active_session():
-    g = DictationOnsetGate(90, 50, 16000, 800, 400, 60000)
-    g.process(_speech_block(200), button_active=False)
+    g = DictationOnsetGate(90, 50, 16000, 800, 400)
+    g.process(_speech_block(200), button_active=False, knob_held=True, require_knob=True)
     assert g.active
     for _ in range(200):
-        assert g.process(_speech_block(26), button_active=False) is None
+        assert g.process(
+            _speech_block(26), button_active=False, knob_held=True, require_knob=True
+        ) is None
         assert g.active
 
 
@@ -105,17 +107,21 @@ def test_hold_cursor_and_button_end_slot1():
     assert ("press", "ENTER") in kb.events
 
 
-def test_max_session_no_post_action():
+def test_idle_cap_no_post_action():
     kb = FakeKeyboard()
     c = Config(
         vad_rms_start=1e9,
-        dictation_max_session_ms=100,
+        dictation_idle_cap_ms=100,
         dictation_onset_min_ms=50,
         button_detector="tone",
     )
     eng, sched = _engine_with_dictation(kb, config=c)
+    eng.dictation.set_serial_link(True, "t")
+    eng.dictation.knob_held = True
     for _ in range(2):
         eng.handle_block(_speech_block())
-    eng.handle_block(_speech_block())
+    eng.dictation.knob_held = False
+    for _ in range(10):
+        eng.handle_block(np.full(800, 26, dtype=np.int16))
     assert sched == []
     assert not eng.dictation.is_active
