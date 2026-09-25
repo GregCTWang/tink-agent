@@ -52,6 +52,11 @@ class Engine:
     def handle_block(self, block):
         if not self.enabled:
             return
+        probe = getattr(self, "_listen_probe", None)
+        if getattr(self, "listen_only", False) and probe is not None:
+            self.button_detector.process(block)
+            probe.log_block(block, self.button_detector.last_metrics)
+            return
         slot = self.button_detector.process(block)
         button_active = self.button_detector.button_active
         metrics = self.button_detector.last_metrics
