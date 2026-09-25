@@ -17,6 +17,7 @@ PROFILE_BACKFILL_KEYS = (
     "cancel_fallback",
     "cancel_method",
     "cancel_sequence",
+    "undo_delay_ms",
 )
 
 

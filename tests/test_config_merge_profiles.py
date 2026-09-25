@@ -13,7 +13,8 @@ def test_merge_backfills_restore_on_cancel_by_match():
     merged = merge_dictation_profiles(existing, DEFAULT_PROFILES)
     claude = next(p for p in merged if p["match"] == "Claude")
     assert claude["restore_on_cancel"] is False
-    assert claude["cancel_method"] == "escape"
+    assert claude["cancel_method"] == "stop_then_undo"
+    assert claude["undo_delay_ms"] == 1500
     assert claude["send_delay_ms"] == 200
 
 
@@ -32,4 +33,5 @@ def test_config_load_merges_profiles(tmp_path):
     loaded = Config.load(path)
     grok = next(p for p in loaded.dictation_profiles if "Grok" in p["match"])
     assert "restore_on_cancel" in grok
-    assert grok["cancel_fallback"] == "none"
+    assert grok["cancel_method"] == "stop_then_undo"
+    assert grok["undo_delay_ms"] == 1500

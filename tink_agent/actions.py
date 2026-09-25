@@ -249,6 +249,55 @@ class ActionRouter:
             elif then_toggle and keys:
                 self._do_dictation_tap(keys)
 
+    def dictation_cancel_stop(self, profile: dict, log_fn=None) -> None:
+        self._dispatch(lambda: self._run(self._do_cancel_stop, (profile, log_fn)))
+
+    def _do_cancel_stop(self, args) -> None:
+        profile, log_fn = args
+        mode = str(profile.get("mode") or "toggle")
+        keys = list(profile.get("keys") or [])
+        label = "+".join(str(k) for k in keys)
+
+        def log(msg: str) -> None:
+            if log_fn:
+                log_fn(msg)
+
+        try:
+            from . import keyboard_cgevent as cg
+
+            if mode == "hold":
+                cg.release_tokens_cleared(list(self._held_tokens or keys))
+            else:
+                cg.tap_tokens_cleared(keys)
+            log(f"{label} (cancel_stop)")
+            self._held_keys = []
+            self._held_tokens = []
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            if mode == "hold":
+                self._do_dictation_release_all(None)
+            else:
+                self._do_dictation_tap(keys)
+            log(f"{label} (cancel_stop) flags=fallback_pynput")
+
+    def dictation_cancel_undo(self, log_fn=None) -> None:
+        self._dispatch(lambda: self._run(self._do_cancel_undo, log_fn))
+
+    def _do_cancel_undo(self, log_fn) -> None:
+        def log(msg: str) -> None:
+            if log_fn:
+                log_fn(msg)
+
+        try:
+            from . import keyboard_cgevent as cg
+
+            fl = cg.post_cmd_z_cleared()
+            log(f"cmd+z (cancel_undo) {fl}")
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self._do_dictation_tap(["cmd", "z"])
+            log("cmd+z (cancel_undo) flags=fallback_pynput")
+
     def dictation_release_all(self) -> None:
         self._run(self._do_dictation_release_all, None)
 

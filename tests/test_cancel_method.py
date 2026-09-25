@@ -65,7 +65,7 @@ def test_grey_cancel_escape_skips_stop_toggle():
         delay_fn=lambda _m, fn: fn(),
     )
     profile = next(p for p in c.dictation_profiles if "Grok" in p["match"])
-    d._profile = dict(profile)
+    d._profile = {**dict(profile), "cancel_method": "escape"}
     d._gate.activate()
     d._end_session(reason="grey_cancel", post_action=None, cancelled=True)
     assert ("press", "CMD") not in kb.events

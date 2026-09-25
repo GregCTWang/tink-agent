@@ -24,7 +24,8 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": False,
-        "cancel_method": "escape",
+        "cancel_method": "stop_then_undo",
+        "undo_delay_ms": 1500,
         "cancel_sequence": "escape_then_release",
     },
     {
@@ -34,7 +35,8 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": False,
-        "cancel_method": "escape",
+        "cancel_method": "stop_then_undo",
+        "undo_delay_ms": 1500,
         "cancel_sequence": "escape_then_release",
     },
     {
@@ -44,7 +46,8 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": False,
-        "cancel_method": "escape",
+        "cancel_method": "stop_then_undo",
+        "undo_delay_ms": 1500,
         "cancel_sequence": "escape_then_release",
     },
 ]
@@ -246,6 +249,7 @@ class DictationController:
         self._cancel_snapshot: FocusSnapshot | None = None
         self._ax_port_factory = ax_port_factory
         self._ax_port = None
+        self._session_gen = 0
 
     @property
     def knob_source(self) -> str:
@@ -468,6 +472,13 @@ class DictationController:
         elif self.logger is not None:
             self.logger.dictation(front, f"restore {detail}")
 
+    def _front_matches_session(self, session_front: str) -> bool:
+        if not session_front:
+            return True
+        cur = (self._front() or "").lower()
+        exp = session_front.lower()
+        return exp in cur or cur in exp
+
     def _get_ax_port(self):
         if self._ax_port is not None:
             return self._ax_port
@@ -549,6 +560,7 @@ class DictationController:
             self._on_event("dictation", "no_profile")
             self._log_dictation(f"start skipped reason=no_profile front={front[:40]}")
             return
+        self._session_gen += 1
         self._gate.activate()
         self._profile = profile
         mode = profile.get("mode", "toggle")
@@ -626,6 +638,32 @@ class DictationController:
                 )
 
             self._dispatch(do_escape_cancel)
+            return
+
+        if cancelled and cancel_method == "stop_then_undo":
+            self._session_toggle_tap_at = None
+            had_speech = self._speech_detected
+            session_front = self._front()
+            gen = self._session_gen
+            undo_ms = int(profile.get("undo_delay_ms", 1500))
+
+            def stop_phase() -> None:
+                self.router.dictation_cancel_stop(profile, self._log_keys)
+
+            def undo_phase() -> None:
+                if not had_speech:
+                    self._log_keys("undo skipped reason=no_speech")
+                    return
+                if gen != self._session_gen:
+                    self._log_keys("undo skipped reason=new_session")
+                    return
+                if not self._front_matches_session(session_front):
+                    self._log_keys("undo skipped reason=app_changed")
+                    return
+                self.router.dictation_cancel_undo(self._log_keys)
+
+            self._dispatch(stop_phase)
+            self._delay(undo_ms, lambda: self._dispatch(undo_phase))
             return
 
         stop_delay_ms = 0
