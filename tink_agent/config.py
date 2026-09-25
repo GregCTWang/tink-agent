@@ -75,6 +75,12 @@ class Config:
     dictation_audio_ptt_hangover_ms: int = 400
     dictation_audio_post_button_ms: int = 900
     dictation_audio_session_cooldown_ms: int = 800
+    dictation_audio_idle_cap_ms: int = 60000
+    dictation_audio_knob_squeeze_rms_min: float = 7500.0
+    dictation_audio_knob_squeeze_sim_min: float = 0.92
+    dictation_audio_knob_squeeze_sq_min: float = 0.20
+    dictation_audio_knob_squeeze_min_ms: float = 400.0
+    dictation_audio_grey_max_ms: float = 350.0
     # Legacy silence-floor keys (ignored; kept for config merge compatibility).
     dictation_release_rms: float = 35.0
     dictation_hangover_ms: int = 450

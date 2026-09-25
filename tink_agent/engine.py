@@ -2,7 +2,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from .frontmost import FrontmostTracker, is_self_app
-from .fx_button import passes_audio_only_button
+from .fx_button import is_grey_tap_detection, knob_squeeze_detection
 
 
 class Engine:
@@ -76,13 +76,18 @@ class Engine:
                         self.logger.action(slot, action, front)
                         self.logger.tone(slot, front, "serial_grey_audio")
             elif self.dictation and self.dictation.knob_source == "audio_fallback":
-                if not passes_audio_only_button(detection, self.config):
-                    slot = None
-                elif self.dictation.handle_audio_grey(slot, detection):
-                    self._on_event("tone", slot)
-                    self._on_event("action", "audio_grey")
+                if knob_squeeze_detection(detection, self.config):
+                    self.dictation.note_knob_squeeze_finalize(detection)
                     if self.logger:
-                        self.logger.tone(slot, front, f"audio_grey slot{slot}")
+                        self.logger.tone(slot, front, "knob_squeeze_finalize")
+                    slot = None
+                elif is_grey_tap_detection(detection, self.config):
+                    if self.dictation.handle_audio_grey(slot, detection):
+                        self._on_event("tone", slot)
+                        self._on_event("action", "audio_grey")
+                        if self.logger:
+                            self.logger.tone(slot, front, f"audio_grey slot{slot}")
+                    slot = None
                 else:
                     slot = None
             elif self.logger:

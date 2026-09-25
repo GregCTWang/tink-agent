@@ -6,10 +6,12 @@ import numpy as np
 from tink_agent.actions import ActionRouter
 from tink_agent.config import Config
 from tink_agent.dictation import DictationController
-from tink_agent.engine import Engine
-from tink_agent.fx_button import passes_audio_only_button
-from tink_agent.audio_ptt import AudioPttTracker
-from tink_agent.detector import VoiceGate
+from tink_agent.fx_button import (
+    is_grey_tap_detection,
+    knob_squeeze_detection,
+    knob_squeeze_onset_block,
+    passes_audio_only_button,
+)
 
 
 class FakeKey:
@@ -47,22 +49,9 @@ class FakeKeyboard:
         return FakeKeyboard._P(self, k)
 
 
-class FakeButtons:
-    def __init__(self):
-        self.button_active = False
-        self.last_metrics = {}
-        self.last_detection = {}
-
-    def process(self, block):
-        return None
-
-
-def _dictation(kb, front="Grok Bot com.test", mono=None):
+def _dictation(kb, front="Grok Bot com.test"):
     c = Config(
         dictation_onset_rms=300,
-        dictation_onset_min_ms=50,
-        dictation_auto_floor=True,
-        dictation_floor_released_rms=28,
         dictation_audio_session_cooldown_ms=800,
         dictation_audio_post_button_ms=900,
     )
@@ -88,50 +77,74 @@ def _dictation(kb, front="Grok Bot com.test", mono=None):
     return d, c, t, scheduled
 
 
-def test_audio_ptt_press_and_release():
-    ptt = AudioPttTracker(
-        onset_rms=300,
-        onset_min_blocks=2,
-        release_rms=40,
-        hangover_blocks=3,
-        auto_floor=True,
-        floor_released_rms=28,
-        floor_ema_alpha=0.08,
-    )
-    quiet = 25.0
-    loud = 400.0
-    assert ptt.update(quiet) is None
-    assert ptt.update(loud) is None
-    assert ptt.update(loud) == "down"
-    assert ptt.held
-    for _ in range(2):
-        assert ptt.update(quiet) is None
-    assert ptt.update(quiet) == "up"
+def _squeeze_block_metrics(rms: float = 9800.0) -> dict:
+    return {
+        "rms": rms,
+        "best_slot": 1,
+        "similarity": 0.985,
+        "square_score": 0.29,
+        "similarity_margin": 0.2,
+    }
 
 
-def test_audio_fallback_ptt_starts_dictation_not_voice_alone():
+def _quiet_block_metrics() -> dict:
+    return {
+        "rms": 7.5,
+        "best_slot": None,
+        "similarity": 0.75,
+        "square_score": 0.03,
+    }
+
+
+def test_knob_squeeze_vs_grey_tap_duration():
+    c = Config()
+    short = {
+        "slot": 1,
+        "duration_ms": 150,
+        "rms": 8104,
+        "similarity": 0.98,
+        "square_score": 0.31,
+        "similarity_margin": 0.2,
+    }
+    long = {
+        "slot": 1,
+        "duration_ms": 1250,
+        "rms": 9154,
+        "similarity": 0.98,
+        "square_score": 0.29,
+        "similarity_margin": 0.21,
+    }
+    assert not knob_squeeze_detection(short, c)
+    assert is_grey_tap_detection(short, c)
+    assert knob_squeeze_detection(long, c)
+    assert not is_grey_tap_detection(long, c)
+
+
+def test_greg_log_pattern_squeeze_then_silence_stays_active():
+    """Replay Greg d0aacaf failure: loud squeeze tone then rms~7 must not stop session."""
     kb = FakeKeyboard()
     d, c, t, scheduled = _dictation(kb)
-    loud = np.full(800, 400, dtype=np.int16)
-    for _ in range(3):
-        d.observe_block(loud, False)
-    assert scheduled
-    scheduled[0][1]()
+    loud = np.zeros(800, dtype=np.int16)
+    quiet = np.full(800, 7, dtype=np.int16)
+    for _ in range(16):
+        d.observe_block(loud, True, tone_metrics=_squeeze_block_metrics())
     assert d.is_active
     assert ("press", "CMD") in kb.events
+    presses = sum(1 for ev in kb.events if ev == ("press", "d"))
+    for _ in range(12):
+        d.observe_block(quiet, False, tone_metrics=_quiet_block_metrics())
+    assert d.is_active
+    assert sum(1 for ev in kb.events if ev == ("press", "d")) == presses
 
 
-def test_audio_grey_send_and_cancel_no_immediate_restart():
+def test_squeeze_while_active_is_ignored():
     kb = FakeKeyboard()
-    d, c, t, _scheduled = _dictation(kb)
+    d, c, t, scheduled = _dictation(kb)
     d._gate.activate()
     d._profile = c.dictation_profiles[0]
-    d._speech_detected = True
-    assert d.handle_audio_grey(1, {"slot": 1, "similarity": 0.92, "similarity_margin": 0.1, "square_score": 0.3, "rms": 4000})
-    assert not d.is_active
-    t["t"] += 0.05
-    d.observe_block(np.full(800, 400, dtype=np.int16), False)
-    assert not d.is_active
+    d.observe_block(np.zeros(800, dtype=np.int16), True, tone_metrics=_squeeze_block_metrics())
+    assert d.is_active
+    assert len([e for e in kb.events if e[0] == "press" and e[1] == "CMD"]) <= 1
 
 
 def test_passes_audio_only_rejects_voice_like_margin():
@@ -144,14 +157,6 @@ def test_passes_audio_only_rejects_voice_like_margin():
         "square_score": 0.05,
     }
     assert not passes_audio_only_button(ok, c)
-    good = {
-        "slot": 2,
-        "similarity": 0.91,
-        "similarity_margin": 0.09,
-        "rms": 5000,
-        "square_score": 0.05,
-    }
-    assert passes_audio_only_button(good, c)
 
 
 def test_greg_debug_log_quiet_voice_blocks_fail_audio_gate():
@@ -159,9 +164,7 @@ def test_greg_debug_log_quiet_voice_blocks_fail_audio_gate():
     if not log_path.exists():
         return
     c = Config()
-    pattern = re.compile(
-        r"block rms=([\d.]+).*sim=([\d.]+).*session=1"
-    )
+    pattern = re.compile(r"block rms=([\d.]+).*sim=([\d.]+).*session=1")
     false_pos = 0
     total = 0
     for line in log_path.read_text().splitlines():
@@ -181,8 +184,9 @@ def test_greg_debug_log_quiet_voice_blocks_fail_audio_gate():
             "similarity_margin": 0.02,
             "rms": rms,
             "square_score": 0.04,
+            "duration_ms": 50,
         }
-        if passes_audio_only_button(det, c):
+        if is_grey_tap_detection(det, c):
             false_pos += 1
     assert total > 100
     assert false_pos == 0

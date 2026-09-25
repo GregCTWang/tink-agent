@@ -383,6 +383,48 @@ class FxButtonDetector:
         return None
 
 
+def knob_squeeze_onset_block(metrics: dict, config) -> bool:
+    """First block of a handle squeeze: loud slot-1-like tone (not speech)."""
+    if int(metrics.get("best_slot") or 0) != 1:
+        return False
+    rms = float(metrics.get("rms") or 0.0)
+    sim = float(metrics.get("similarity") or 0.0)
+    sq = float(metrics.get("square_score") or 0.0)
+    rms_min = float(getattr(config, "dictation_audio_knob_squeeze_rms_min", 7500.0))
+    sim_min = float(getattr(config, "dictation_audio_knob_squeeze_sim_min", 0.92))
+    sq_min = float(getattr(config, "dictation_audio_knob_squeeze_sq_min", 0.20))
+    return rms >= rms_min and sim >= sim_min and sq >= sq_min
+
+
+def knob_squeeze_detection(detection: dict, config) -> bool:
+    """Finalized accumulator burst from holding the knob (long slot-1 tone)."""
+    slot = int(detection.get("slot") or 0)
+    if slot != 1:
+        return False
+    dur = float(detection.get("duration_ms") or 0.0)
+    dur_min = float(getattr(config, "dictation_audio_knob_squeeze_min_ms", 400.0))
+    rms = float(detection.get("rms") or 0.0)
+    sim = float(detection.get("similarity") or 0.0)
+    sq = float(detection.get("square_score") or 0.0)
+    rms_min = float(getattr(config, "dictation_audio_knob_squeeze_rms_min", 7500.0))
+    sim_min = float(getattr(config, "dictation_audio_knob_squeeze_sim_min", 0.92))
+    sq_min = float(getattr(config, "dictation_audio_knob_squeeze_sq_min", 0.20))
+    return dur >= dur_min and rms >= rms_min and sim >= sim_min and sq >= sq_min
+
+
+def is_grey_tap_detection(detection: dict, config) -> bool:
+    """Short grey-key beep (slots 1–2); not a knob squeeze."""
+    slot = int(detection.get("slot") or 0)
+    if slot not in (1, 2):
+        return False
+    if knob_squeeze_detection(detection, config):
+        return False
+    dur_max = float(getattr(config, "dictation_audio_grey_max_ms", 350.0))
+    if float(detection.get("duration_ms") or 0.0) > dur_max:
+        return False
+    return passes_audio_only_button(detection, config)
+
+
 def passes_audio_only_button(detection: dict, config) -> bool:
     """Stricter acceptance for 3.5 mm-only mode (no serial knob)."""
     slot = int(detection.get("slot") or 0)

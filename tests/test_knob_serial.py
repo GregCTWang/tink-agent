@@ -77,12 +77,12 @@ def _speech():
     return np.full(800, 200, dtype=np.int16)
 
 
-def _setup(kb, serial_linked=True):
+def _setup(kb, serial_linked=True, button_detector="tone"):
     c = Config(
         vad_rms_start=1e9,
         dictation_onset_min_ms=50,
         knob_serial_enabled=True,
-        button_detector="tone",
+        button_detector=button_detector,
     )
     router = ActionRouter(c.slot_actions, keyboard=kb)
     scheduled = []
@@ -221,12 +221,16 @@ def test_idle_cap_when_released_and_silent():
 
 def test_audio_fallback_button_end():
     kb = FakeKeyboard()
-    eng, d, sched, _ = _setup(kb, serial_linked=False)
+    eng, d, sched, _ = _setup(kb, serial_linked=False, button_detector="fxmic")
+    metrics = {
+        "rms": 9800,
+        "best_slot": 1,
+        "similarity": 0.985,
+        "square_score": 0.29,
+    }
     loud = np.full(800, 400, dtype=np.int16)
     for _ in range(3):
-        eng.handle_block(loud)
-    assert sched
-    sched[0][1]()
+        d.observe_block(loud, True, tone_metrics=metrics)
     assert d.is_active
     det = {
         "slot": 2,
@@ -234,9 +238,12 @@ def test_audio_fallback_button_end():
         "similarity_margin": 0.08,
         "rms": 5000,
         "square_score": 0.05,
+        "duration_ms": 100,
     }
     assert d.handle_audio_grey(2, det)
-    sched[0][1]()
+    before = len(sched)
+    for _, fn in sched[before:]:
+        fn()
 
 
 def test_exec_payload_is_read_only_poll():

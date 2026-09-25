@@ -9,7 +9,7 @@ from typing import Callable
 
 import numpy as np
 
-from .audio_ptt import AudioPttTracker
+from .fx_button import knob_squeeze_onset_block
 
 DEFAULT_PROFILES: list[dict] = [
     {
@@ -221,9 +221,9 @@ class DictationController:
         self._speech_detected = False
         self._knob_start_generation = 0
         self._session_toggle_tap_at: float | None = None
-        self._audio_ptt = self._make_audio_ptt()
         self._audio_button_dead_until = 0.0
         self._audio_session_cooldown_until = 0.0
+        self._squeeze_onset_latched = False
 
     @property
     def knob_source(self) -> str:
@@ -248,33 +248,10 @@ class DictationController:
             onset_window_samples=window_samples,
         )
 
-    def _make_audio_ptt(self) -> AudioPttTracker:
-        c = self.config
-        block_ms = 1000.0 * c.block_size / c.sample_rate
-        hangover_ms = int(getattr(c, "dictation_audio_ptt_hangover_ms", 400))
-        hangover_blocks = max(1, int(round(hangover_ms / block_ms)))
-        onset_min_blocks = max(
-            1,
-            int(round(getattr(c, "dictation_onset_min_ms", 80) / block_ms)),
-        )
-        release_rms = float(getattr(c, "dictation_floor_released_rms", 28.0))
-        if not getattr(c, "dictation_auto_floor", False):
-            release_rms = min(release_rms, c.dictation_onset_rms * 0.35)
-        return AudioPttTracker(
-            onset_rms=c.dictation_onset_rms,
-            onset_min_blocks=onset_min_blocks,
-            release_rms=release_rms,
-            hangover_blocks=hangover_blocks,
-            auto_floor=bool(getattr(c, "dictation_auto_floor", False)),
-            floor_released_rms=float(getattr(c, "dictation_floor_released_rms", 28.0)),
-            floor_ema_alpha=float(getattr(c, "dictation_floor_ema_alpha", 0.08)),
-        )
-
     def reload_config(self) -> None:
         if self._gate.active:
             self.force_release("config_reload")
         self._gate = self._make_gate()
-        self._audio_ptt = self._make_audio_ptt()
         self.debug_logger.set_enabled(getattr(self.config, "dictation_debug_log", False))
         if getattr(self.config, "dictation_debug_path", ""):
             self.debug_logger.path = Path(self.config.dictation_debug_path)
@@ -365,7 +342,7 @@ class DictationController:
         full_rms = block_rms(block)
         src = self.knob_source
         if src == "audio_fallback":
-            self.knob_held = self._audio_ptt.held
+            self.knob_held = self._gate.active
         require_knob = src == "serial"
         self.debug_logger.rms_min = getattr(self.config, "dictation_debug_rms_min", 500.0)
         m = dict(tone_metrics or {})
@@ -389,25 +366,21 @@ class DictationController:
         if src == "serial":
             pass
         elif src == "audio_fallback":
-            if button_active or slot is not None:
-                self._audio_ptt.reset()
-            elif self._mono() >= self._audio_button_dead_until:
-                edge = self._audio_ptt.update(full_rms)
-                if edge == "down" and not self._gate.active:
-                    self._log_knob("ptt_down")
-                    self._schedule_knob_start()
-                elif edge == "up" and self._gate.active:
-                    self._log_knob("ptt_up")
-                    self._cancel_knob_start_debounce()
-                    if self._skip_release_send:
-                        self._skip_release_send = False
-                    elif self._speech_detected:
-                        action = getattr(self.config, "dictation_release_action", "enter")
-                        self._gate.reset()
-                        self._end_session(reason="release_send", post_action=action)
-                    else:
-                        self._gate.reset()
-                        self._end_session(reason="release_nospeech", post_action=None)
+            if button_active:
+                if knob_squeeze_onset_block(m, self.config):
+                    if self._gate.active:
+                        if not self._squeeze_onset_latched:
+                            self._log_knob("squeeze_ignored reason=session_active")
+                            self._squeeze_onset_latched = True
+                    elif (
+                        self._mono() >= self._audio_button_dead_until
+                        and self._mono() >= self._audio_session_cooldown_until
+                        and not self._squeeze_onset_latched
+                    ):
+                        self._squeeze_onset_latched = True
+                        self._start_audio_squeeze_session()
+            else:
+                self._squeeze_onset_latched = False
         else:
             transition = self._gate.process(
                 block,
@@ -433,19 +406,29 @@ class DictationController:
 
         if self._gate.active and src == "audio_fallback":
             block_ms = self._gate._block_ms
-            if self.knob_held or full_rms >= self.config.dictation_onset_rms:
+            if full_rms >= self.config.dictation_onset_rms:
                 self._idle_ms = 0.0
             else:
                 self._idle_ms += block_ms
-                cap = getattr(self.config, "dictation_idle_cap_ms", 180000)
+                cap = int(getattr(self.config, "dictation_audio_idle_cap_ms", 60000))
                 if self._idle_ms >= cap:
                     self._gate.reset()
                     self._end_session(reason="idle_cap", post_action=None)
 
+    def _start_audio_squeeze_session(self) -> None:
+        self._speech_detected = False
+        self._skip_release_send = False
+        self._log_knob("squeeze_onset")
+        self._mark_audio_button_cooldown()
+        self._begin_session()
+
+    def note_knob_squeeze_finalize(self, detection: dict) -> None:
+        dur = detection.get("duration_ms", "-")
+        self._log_knob(f"squeeze_finalize dur={dur}")
+
     def _mark_audio_button_cooldown(self) -> None:
         post_ms = int(getattr(self.config, "dictation_audio_post_button_ms", 900))
         self._audio_button_dead_until = self._mono() + post_ms / 1000.0
-        self._audio_ptt.reset()
 
     def handle_audio_grey(self, slot: int, detection: dict | None = None) -> bool:
         """3.5 mm-only grey keys: slot 1 send, slot 2 cancel; consume spurious slots."""
