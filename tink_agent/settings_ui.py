@@ -71,7 +71,7 @@ class SettingsController(NSObject):
 
     # --- build ---
     def _build(self):
-        H = 512
+        H = 556
         win, c = theme.window("TINK Agent", W, H)
         win.setTitle_("TINK Agent")
         self.window = win
@@ -82,25 +82,29 @@ class SettingsController(NSObject):
         # General
         gh = theme.section_header("General"); gh.setFrame_(NSMakeRect(m + 13, y, 200, 16))
         c.addSubview_(gh); y += 22
-        gcard = theme.card(m, y, cw, 4 * 44 + 2)
+        gcard = theme.card(m, y, cw, 5 * 44 + 2)
         gbody = gcard.contentView()
         r1, self.sw_enabled = theme.switch_row(
             "Enabled", "Fire actions & type text", self.app.engine.enabled,
             self._enabled_cb, cw, 0)
-        r2, self.sw_login = theme.switch_row(
-            "Start at login", None, False, self._login_cb, cw, 44)
-        r3, self.sw_log = theme.switch_row(
+        r2, self.sw_dictation = theme.switch_row(
+            "Push-to-talk dictation", "Per-app shortcuts in config.json",
+            self.app.config.dictation_enabled, self._dictation_cb, cw, 44)
+        r3, self.sw_login = theme.switch_row(
+            "Start at login", None, False, self._login_cb, cw, 88)
+        r4, self.sw_log = theme.switch_row(
             "Log activity to file", "Transcripts, app, actions",
-            self.app.config.log_activity, self._log_cb, cw, 88)
-        for r in (r1, r2, r3):
+            self.app.config.log_activity, self._log_cb, cw, 132)
+        for r in (r1, r2, r3, r4):
             gbody.addSubview_(r)
         gbody.addSubview_(theme.hairline(15, 44, cw - 15))
         gbody.addSubview_(theme.hairline(15, 88, cw - 15))
         gbody.addSubview_(theme.hairline(15, 132, cw - 15))
+        gbody.addSubview_(theme.hairline(15, 176, cw - 15))
         self.btn_edit_actions = theme.accent_button(
-            "Edit Button Actions…", self._edit_actions, (cw - 210) / 2.0, 139, 210, 30)
+            "Edit Button Actions…", self._edit_actions, (cw - 210) / 2.0, 183, 210, 30)
         gbody.addSubview_(self.btn_edit_actions)
-        c.addSubview_(gcard); y += 4 * 44 + 2 + 18
+        c.addSubview_(gcard); y += 5 * 44 + 2 + 18
 
         # Input
         ih = theme.section_header("Input"); ih.setFrame_(NSMakeRect(m + 13, y, 200, 16))
@@ -158,6 +162,7 @@ class SettingsController(NSObject):
     def refresh(self):
         on, off = NSControlStateValueOn, NSControlStateValueOff
         self.sw_enabled.setState_(on if self.app.engine.enabled else off)
+        self.sw_dictation.setState_(on if self.app.config.dictation_enabled else off)
         from . import launchagent
         self.sw_login.setState_(on if launchagent.is_enabled() else off)
         self.sw_log.setState_(on if self.app.config.log_activity else off)
@@ -204,6 +209,8 @@ class SettingsController(NSObject):
 
     # --- callbacks ---
     def _enabled_cb(self, on): self.app.set_enabled(on)
+
+    def _dictation_cb(self, on): self.app.set_dictation_enabled(on)
 
     def _login_cb(self, on):
         if not self.app.set_start_at_login(on):

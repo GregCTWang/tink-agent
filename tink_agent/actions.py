@@ -26,6 +26,7 @@ ACTION_CATALOG = [
     {"id": "type:continue", "label": 'Send "continue"',  "glyph": "»"},
     {"id": "type:/clear",   "label": "Send /clear",            "glyph": "/"},
     {"id": "type:/compact", "label": "Send /compact",          "glyph": "/"},
+    {"id": "dictation_cancel", "label": "Cancel dictation (no send)", "glyph": "✕"},
     {"id": "noop",          "label": "No action",              "glyph": "–"},
 ]
 
@@ -49,6 +50,8 @@ class ActionRouter:
         # dispatcher. Default = run inline (tests / non-GUI).
         self._dispatch = dispatch or (lambda fn: fn())
         self.last_error: str | None = None
+        # Keys held for hold-mode dictation (Ctrl+M etc.); released on cleanup.
+        self._held_keys: list = []
 
     @property
     def kb(self):
@@ -65,10 +68,13 @@ class ActionRouter:
             return "unmapped"
         if action == "noop":
             return "noop"
-        # Defer the actual keystroke to the main thread; return the action id
-        # now so the caller can emit events / log without waiting.
-        self._dispatch(lambda a=action: self._run(self._perform, a))
+        self.fire_named_action(action)
         return action
+
+    def fire_named_action(self, action: str) -> None:
+        if not action or action in ("noop", "unmapped"):
+            return
+        self._dispatch(lambda a=action: self._run(self._perform, a))
 
     def _run(self, fn, arg) -> None:
         """Execute a keyboard side-effect (on the main thread), trapping errors
@@ -131,3 +137,52 @@ class ActionRouter:
 
     def _do_type(self, text: str) -> None:
         self.kb.type(text)
+
+    def has_held_keys(self) -> bool:
+        return bool(self._held_keys)
+
+    def _key_obj(self, name: str):
+        Key = self.kb.Key
+        return getattr(Key, name, name)
+
+    def dictation_tap(self, keys: list) -> None:
+        """Tap a shortcut (press+release each modifier, then letter, unmodified)."""
+        self._run(self._do_dictation_tap, list(keys))
+
+    def _do_dictation_tap(self, keys: list) -> None:
+        kb = self.kb
+        mods = [self._key_obj(k) for k in keys[:-1]] if len(keys) > 1 else []
+        final = self._key_obj(keys[-1]) if keys else None
+        for m in mods:
+            kb.press(m)
+        if final is not None:
+            kb.press(final)
+            kb.release(final)
+        for m in reversed(mods):
+            kb.release(m)
+
+    def dictation_press(self, keys: list) -> None:
+        """Press and hold a combo until dictation_release_all."""
+        self._run(self._do_dictation_press, list(keys))
+
+    def _do_dictation_press(self, keys: list) -> None:
+        self.dictation_release_all()
+        kb = self.kb
+        held = []
+        for token in keys:
+            k = self._key_obj(token)
+            kb.press(k)
+            held.append(k)
+        self._held_keys = held
+
+    def dictation_release_all(self) -> None:
+        self._run(self._do_dictation_release_all, None)
+
+    def _do_dictation_release_all(self, _ignored) -> None:
+        kb = self.kb
+        for k in reversed(self._held_keys):
+            try:
+                kb.release(k)
+            except Exception:  # noqa: BLE001
+                pass
+        self._held_keys = []

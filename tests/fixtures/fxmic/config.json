@@ -1,0 +1,98 @@
+{
+  "device_name": "USB Advanced Audio Device",
+  "sample_rate": 16000,
+  "block_size": 800,
+  "tones": {
+    "1": 1500,
+    "2": 2300,
+    "3": 3100,
+    "4": 3900,
+    "5": 2751,
+    "6": 4218,
+    "7": 5685,
+    "8": 7153
+  },
+  "tone_rms_min": 1000,
+  "tone_dominance_min": 0.9,
+  "tone_tonality_min": 0.5,
+  "tone_debounce_ms": 300,
+  "vad_rms_start": 1000000000,
+  "vad_rms_end": 1000000000,
+  "vad_hangover_ms": 800,
+  "min_utterance_ms": 400,
+  "max_utterance_ms": 30000,
+  "stt_model": "",
+  "mw_binary": "/Applications/MacWhisper.app/Contents/MacOS/mw",
+  "stt_backend": "custom",
+  "stt_command": [
+    "/usr/bin/true"
+  ],
+  "stt_output": "last_line",
+  "slot_actions": {
+    "1": "enter",
+    "2": "escape",
+    "3": "ctrl_c",
+    "4": "shift_tab",
+    "5": "up",
+    "6": "down",
+    "7": "tab",
+    "8": "backspace"
+  },
+  "dictation_enabled": true,
+  "dictation_onset_rms": 90.0,
+  "dictation_release_rms": 36,
+  "dictation_onset_min_ms": 80,
+  "dictation_hangover_ms": 900,
+  "dictation_onset_window_ms": 25,
+  "dictation_send_delay_ms": 200,
+  "dictation_max_session_ms": 60000,
+  "dictation_profiles": [
+    {
+      "match": "Grok Bot",
+      "mode": "toggle",
+      "keys": [
+        "cmd",
+        "d"
+      ],
+      "auto_send": true,
+      "send_delay_ms": 200
+    },
+    {
+      "match": "Claude",
+      "mode": "toggle",
+      "keys": [
+        "cmd",
+        "d"
+      ],
+      "auto_send": true,
+      "send_delay_ms": 200
+    },
+    {
+      "match": "Cursor",
+      "mode": "hold",
+      "keys": [
+        "ctrl",
+        "m"
+      ],
+      "auto_send": true,
+      "send_delay_ms": 200,
+      "cancel_escape": true
+    }
+  ],
+  "dictation_auto_floor": true,
+  "dictation_floor_released_rms": 28.0,
+  "dictation_floor_held_rms": 43.0,
+  "dictation_floor_ema_alpha": 0.08,
+  "dictation_cancel_on_any_tone": true,
+  "dictation_debug_log": true,
+  "dictation_debug_path": "",
+  "dictation_debug_rms_min": 500.0,
+  "target_apps": [],
+  "target_app": "",
+  "output_mode": "type",
+  "enabled": true,
+  "start_at_login": false,
+  "onboarding_done": false,
+  "log_activity": true,
+  "log_path": ""
+}
