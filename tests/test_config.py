@@ -110,7 +110,8 @@ def test_dictation_defaults():
     assert c.cancel_restore_settle_ms == 400
     assert c.dictation_release_action == "enter"
     claude = next(p for p in c.dictation_profiles if p.get("match") == "Claude")
-    assert claude.get("restore_on_cancel") is True
+    assert claude.get("restore_on_cancel") is False
+    assert claude.get("cancel_method") == "escape"
     grok = next(p for p in c.dictation_profiles if "Grok" in p.get("match", ""))
     assert grok.get("restore_on_cancel") is False
     assert c.fx_button_similarity_min == 0.72

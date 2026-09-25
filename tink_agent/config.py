@@ -15,6 +15,8 @@ PROFILE_BACKFILL_KEYS = (
     "cancel_escape",
     "restore_on_cancel",
     "cancel_fallback",
+    "cancel_method",
+    "cancel_sequence",
 )
 
 
@@ -46,6 +48,8 @@ def merge_dictation_profiles(existing: list, defaults: list | None = None) -> li
         if m and m not in seen:
             merged.append(dict(d))
     return merged
+
+
 MW_BINARY = "/Applications/MacWhisper.app/Contents/MacOS/mw"
 
 
@@ -91,6 +95,7 @@ class Config:
     cancel_restore_timeout_ms: int = 4000
     cancel_restore_settle_ms: int = 400
     cancel_fallback_delay_ms: int = 1500
+    cancel_escape_then_toggle: bool = False
     knob_serial_enabled: bool = True
     knob_serial_port: str = ""  # auto: TE EP-2350 CDC /dev/cu.usbmodemEP*
     knob_poll_ms: int = 10

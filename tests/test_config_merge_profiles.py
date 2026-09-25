@@ -12,8 +12,8 @@ def test_merge_backfills_restore_on_cancel_by_match():
     ]
     merged = merge_dictation_profiles(existing, DEFAULT_PROFILES)
     claude = next(p for p in merged if p["match"] == "Claude")
-    assert claude["restore_on_cancel"] is True
-    assert claude["cancel_fallback"] == "none"
+    assert claude["restore_on_cancel"] is False
+    assert claude["cancel_method"] == "escape"
     assert claude["send_delay_ms"] == 200
 
 

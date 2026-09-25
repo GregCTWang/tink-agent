@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 # Catalog of selectable per-slot actions: the single source of truth shared by
 # the router (what an id does, below) and the Button Actions UI (label + glyph).
 # `type:<text>` ids type the literal text then press Enter (submit).
@@ -52,6 +54,7 @@ class ActionRouter:
         self.last_error: str | None = None
         # Keys held for hold-mode dictation (Ctrl+M etc.); released on cleanup.
         self._held_keys: list = []
+        self._held_tokens: list[str] = []
 
     @property
     def kb(self):
@@ -174,6 +177,77 @@ class ActionRouter:
             kb.press(k)
             held.append(k)
         self._held_keys = held
+        self._held_tokens = list(keys)
+
+    def dictation_grey_cancel_escape(self, profile: dict, config, log_fn=None) -> None:
+        """Escape while recording; hold mode releases modifiers with flags cleared."""
+        self._dispatch(
+            lambda: self._run(
+                self._do_grey_cancel_escape,
+                (profile, config, log_fn),
+            )
+        )
+
+    def _do_grey_cancel_escape(self, args) -> None:
+        profile, config, log_fn = args
+        mode = str(profile.get("mode") or "toggle")
+        keys = list(profile.get("keys") or [])
+        delay_ms = int(profile.get("cancel_release_delay_ms", 120))
+        sequence = str(profile.get("cancel_sequence") or "escape_then_release")
+        then_toggle = bool(getattr(config, "cancel_escape_then_toggle", False))
+        held = list(self._held_tokens or keys)
+
+        def log(msg: str) -> None:
+            if log_fn:
+                log_fn(msg)
+
+        try:
+            from . import keyboard_cgevent as cg
+
+            if mode == "hold":
+                if sequence == "release_then_escape":
+                    finals = [held[-1]] if held else []
+                    mods = held[:-1] if len(held) > 1 else []
+                    if finals:
+                        cg.release_tokens_cleared(finals)
+                        log("release (cancel) flags=0")
+                    time.sleep(delay_ms / 1000.0)
+                    fl = cg.post_escape_cleared()
+                    log(f"escape (cancel) {fl}")
+                    if mods:
+                        cg.release_tokens_cleared(mods)
+                        log("modifiers up (cancel) flags=0")
+                else:
+                    fl = cg.post_escape_cleared()
+                    log(f"escape (cancel) {fl}")
+                    time.sleep(delay_ms / 1000.0)
+                    cg.release_tokens_cleared(held)
+                    log("release (cancel) flags=0")
+                self._held_keys = []
+                self._held_tokens = []
+                return
+
+            fl = cg.post_escape_cleared()
+            log(f"escape (cancel) {fl}")
+            if then_toggle and keys:
+                self._do_dictation_tap(keys)
+                label = "+".join(str(k) for k in keys)
+                log(f"{label} (cancel_toggle)")
+            self._held_keys = []
+            self._held_tokens = []
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            kb = self.kb
+            Key = kb.Key
+            kb.press(Key.esc)
+            kb.release(Key.esc)
+            log("escape (cancel) flags=fallback_pynput")
+            if mode == "hold":
+                time.sleep(delay_ms / 1000.0)
+                self._do_dictation_release_all(None)
+                log("release (cancel) flags=fallback_pynput")
+            elif then_toggle and keys:
+                self._do_dictation_tap(keys)
 
     def dictation_release_all(self) -> None:
         self._run(self._do_dictation_release_all, None)
@@ -186,3 +260,4 @@ class ActionRouter:
             except Exception:  # noqa: BLE001
                 pass
         self._held_keys = []
+        self._held_tokens = []

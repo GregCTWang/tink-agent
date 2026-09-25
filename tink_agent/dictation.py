@@ -24,7 +24,8 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "restore_on_cancel": False,
-        "cancel_fallback": "none",
+        "cancel_method": "escape",
+        "cancel_sequence": "escape_then_release",
     },
     {
         "match": "Claude",
@@ -32,8 +33,9 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["cmd", "d"],
         "auto_send": True,
         "send_delay_ms": 200,
-        "restore_on_cancel": True,
-        "cancel_fallback": "none",
+        "restore_on_cancel": False,
+        "cancel_method": "escape",
+        "cancel_sequence": "escape_then_release",
     },
     {
         "match": "Cursor",
@@ -41,11 +43,20 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["ctrl", "m"],
         "auto_send": True,
         "send_delay_ms": 200,
-        "cancel_escape": True,
-        "restore_on_cancel": True,
-        "cancel_fallback": "none",
+        "restore_on_cancel": False,
+        "cancel_method": "escape",
+        "cancel_sequence": "escape_then_release",
     },
 ]
+
+
+def resolve_cancel_method(profile: dict) -> str:
+    raw = profile.get("cancel_method")
+    if raw:
+        return str(raw).strip().lower()
+    if profile.get("restore_on_cancel"):
+        return "restore"
+    return "escape"
 
 DEFAULT_DEBUG_LOG = Path.home() / "Library" / "Logs" / "TinkAgent-dictation-debug.log"
 
@@ -467,7 +478,7 @@ class DictationController:
 
     def _snapshot_for_cancel(self, profile: dict) -> None:
         self._cancel_snapshot = None
-        if not profile.get("restore_on_cancel"):
+        if resolve_cancel_method(profile) != "restore":
             return
         port = self._get_ax_port()
         if port is None:
@@ -582,9 +593,10 @@ class DictationController:
         match_name = profile.get("match", "")
         label = self._keys_label(keys)
         min_gap_ms = int(getattr(self.config, "dictation_min_toggle_gap_ms", 400))
+        cancel_method = resolve_cancel_method(profile) if cancelled else ""
 
         def stop_keys() -> None:
-            if cancelled and profile.get("cancel_escape"):
+            if cancelled and cancel_method == "stop" and profile.get("cancel_escape"):
                 self.router.dictation_tap(["esc"])
                 self._log_keys("escape")
             if mode == "hold":
@@ -595,41 +607,46 @@ class DictationController:
                 self._log_keys(f"{label} (stop)")
             self._session_toggle_tap_at = None
 
-        fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
-
         def dispatch_stop() -> None:
             self._dispatch(stop_keys)
 
-        def esc_then_stop() -> None:
-            def run() -> None:
-                self.router.dictation_tap(["esc"])
-                self._log_keys("escape (cancel_fallback)")
-                stop_keys()
-
-            self._dispatch(run)
-
         self._on_event("dictation", ("stop", reason))
         self._log_dictation(
-            f"stop reason={reason} profile={match_name} knob_source={self.knob_source}")
+            f"stop reason={reason} profile={match_name} knob_source={self.knob_source}"
+        )
 
-        stop_fn = esc_then_stop if cancelled and fallback == "escape_before_stop" else dispatch_stop
+        if cancelled and cancel_method == "escape":
+            self._session_toggle_tap_at = None
+
+            def do_escape_cancel() -> None:
+                self.router.dictation_grey_cancel_escape(
+                    profile,
+                    self.config,
+                    log_fn=self._log_keys,
+                )
+
+            self._dispatch(do_escape_cancel)
+            return
+
         stop_delay_ms = 0
-        if mode == "toggle" and self._session_toggle_tap_at is not None:
+        if mode == "toggle" and self._session_toggle_tap_at is not None and not cancelled:
             elapsed_ms = (self._mono() - self._session_toggle_tap_at) * 1000.0
             wait_ms = int(max(0, min_gap_ms - elapsed_ms))
             stop_delay_ms = wait_ms
             if wait_ms > 0:
-                self._delay(wait_ms, stop_fn)
+                self._delay(wait_ms, dispatch_stop)
             else:
-                stop_fn()
+                dispatch_stop()
         else:
-            stop_fn()
+            dispatch_stop()
 
-        if cancelled:
-            self._schedule_cancel_fallback(profile, stop_delay_ms=stop_delay_ms)
-
-        if cancelled and profile.get("restore_on_cancel") and restore_snap is not None:
+        if cancelled and cancel_method == "restore" and restore_snap is not None:
             self._schedule_cancel_restore(profile, restore_snap)
+
+        if cancelled and cancel_method == "restore":
+            fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
+            if fallback == "undo":
+                self._schedule_cancel_fallback(profile, stop_delay_ms=stop_delay_ms)
 
         if post_action and post_action not in ("noop", "unmapped") and not cancelled:
             def post() -> None:

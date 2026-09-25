@@ -112,6 +112,7 @@ for key in (
     "dictation_release_action", "dictation_idle_cap_ms",
     "dictation_min_toggle_gap_ms", "cancel_restore_timeout_ms",
     "cancel_restore_settle_ms", "cancel_fallback_delay_ms",
+    "cancel_escape_then_toggle",
 ):
     if key not in existing:
         merged[key] = defaults.get(key)
