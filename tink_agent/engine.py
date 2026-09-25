@@ -2,6 +2,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from .frontmost import FrontmostTracker, is_self_app
+from .fx_button import passes_audio_only_button
 
 
 class Engine:
@@ -51,6 +52,11 @@ class Engine:
     def handle_block(self, block):
         if not self.enabled:
             return
+        probe = getattr(self, "_listen_probe", None)
+        if getattr(self, "listen_only", False) and probe is not None:
+            self.button_detector.process(block)
+            probe.log_block(block, self.button_detector.last_metrics)
+            return
         slot = self.button_detector.process(block)
         button_active = self.button_detector.button_active
         metrics = self.button_detector.last_metrics
@@ -74,10 +80,27 @@ class Engine:
                     if self.logger:
                         self.logger.action(slot, action, front)
                         self.logger.tone(slot, front, "serial_grey_audio")
+            elif self.dictation and self.dictation.knob_source == "audio_fallback":
+                if not passes_audio_only_button(detection, self.config):
+                    slot = None
+                elif self.dictation.handle_audio_grey(slot, detection):
+                    self._on_event("tone", slot)
+                    self._on_event("action", "audio_grey")
+                    if self.logger:
+                        self.logger.tone(slot, front, f"audio_grey slot{slot}")
+                else:
+                    slot = None
             elif self.logger:
                 self.logger.tone(slot, front, "detected")
-            if not serial_mode:
-                if self.dictation and self.dictation.handle_button_end(slot, detection):
+            if not serial_mode and slot is not None:
+                if (
+                    self.dictation
+                    and self.dictation.knob_source == "audio_fallback"
+                ):
+                    pass
+                elif self.dictation and self.dictation.handle_button_end(
+                    slot, detection
+                ):
                     self._on_event("tone", slot)
                     self._on_event("action", "dictation_end")
                     if self.logger:

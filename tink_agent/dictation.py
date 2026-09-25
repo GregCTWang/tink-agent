@@ -9,6 +9,8 @@ from typing import Callable
 
 import numpy as np
 
+from .audio_ptt import AudioPttTracker
+
 DEFAULT_PROFILES: list[dict] = [
     {
         "match": "Grok Bot",
@@ -168,10 +170,11 @@ class DictationDebugLogger:
         if not session_active and not loud and not button_active and slot is None:
             return
         m = metrics or {}
+        sq = m.get("square_score", "-")
         self._write(
             f"block rms={rms:.1f} knob={int(knob_held)} src={knob_source} "
             f"btn={int(button_active)} slot={slot or '-'} "
-            f"sim={m.get('similarity', '-')} session={int(session_active)}"
+            f"sim={m.get('similarity', '-')} sq={sq} session={int(session_active)}"
         )
 
     def log_serial(self, line: str) -> None:
@@ -218,6 +221,9 @@ class DictationController:
         self._speech_detected = False
         self._knob_start_generation = 0
         self._session_toggle_tap_at: float | None = None
+        self._audio_ptt = self._make_audio_ptt()
+        self._audio_button_dead_until = 0.0
+        self._audio_session_cooldown_until = 0.0
 
     @property
     def knob_source(self) -> str:
@@ -242,10 +248,33 @@ class DictationController:
             onset_window_samples=window_samples,
         )
 
+    def _make_audio_ptt(self) -> AudioPttTracker:
+        c = self.config
+        block_ms = 1000.0 * c.block_size / c.sample_rate
+        hangover_ms = int(getattr(c, "dictation_audio_ptt_hangover_ms", 400))
+        hangover_blocks = max(1, int(round(hangover_ms / block_ms)))
+        onset_min_blocks = max(
+            1,
+            int(round(getattr(c, "dictation_onset_min_ms", 80) / block_ms)),
+        )
+        release_rms = float(getattr(c, "dictation_floor_released_rms", 28.0))
+        if not getattr(c, "dictation_auto_floor", False):
+            release_rms = min(release_rms, c.dictation_onset_rms * 0.35)
+        return AudioPttTracker(
+            onset_rms=c.dictation_onset_rms,
+            onset_min_blocks=onset_min_blocks,
+            release_rms=release_rms,
+            hangover_blocks=hangover_blocks,
+            auto_floor=bool(getattr(c, "dictation_auto_floor", False)),
+            floor_released_rms=float(getattr(c, "dictation_floor_released_rms", 28.0)),
+            floor_ema_alpha=float(getattr(c, "dictation_floor_ema_alpha", 0.08)),
+        )
+
     def reload_config(self) -> None:
         if self._gate.active:
             self.force_release("config_reload")
         self._gate = self._make_gate()
+        self._audio_ptt = self._make_audio_ptt()
         self.debug_logger.set_enabled(getattr(self.config, "dictation_debug_log", False))
         if getattr(self.config, "dictation_debug_path", ""):
             self.debug_logger.path = Path(self.config.dictation_debug_path)
@@ -266,7 +295,11 @@ class DictationController:
         self._knob_start_generation += 1
 
     def _schedule_knob_start(self) -> None:
-        if self.knob_source != "serial":
+        if self.knob_source not in ("serial", "audio_fallback"):
+            return
+        if self._mono() < self._audio_session_cooldown_until:
+            return
+        if self._mono() < self._audio_button_dead_until:
             return
         debounce_ms = int(getattr(self.config, "knob_start_debounce_ms", 150))
         gen = self._knob_start_generation + 1
@@ -331,14 +364,19 @@ class DictationController:
             return
         full_rms = block_rms(block)
         src = self.knob_source
+        if src == "audio_fallback":
+            self.knob_held = self._audio_ptt.held
         require_knob = src == "serial"
         self.debug_logger.rms_min = getattr(self.config, "dictation_debug_rms_min", 500.0)
+        m = dict(tone_metrics or {})
+        if "square_score" not in m and m.get("similarity") is not None:
+            m.setdefault("square_score", m.get("square_score", "-"))
         self.debug_logger.log_block(
             session_active=self._gate.active,
             rms=full_rms,
             button_active=button_active,
             slot=slot,
-            metrics=tone_metrics,
+            metrics=m,
             knob_held=self.knob_held,
             knob_source=src,
         )
@@ -350,6 +388,26 @@ class DictationController:
 
         if src == "serial":
             pass
+        elif src == "audio_fallback":
+            if button_active or slot is not None:
+                self._audio_ptt.reset()
+            elif self._mono() >= self._audio_button_dead_until:
+                edge = self._audio_ptt.update(full_rms)
+                if edge == "down" and not self._gate.active:
+                    self._log_knob("ptt_down")
+                    self._schedule_knob_start()
+                elif edge == "up" and self._gate.active:
+                    self._log_knob("ptt_up")
+                    self._cancel_knob_start_debounce()
+                    if self._skip_release_send:
+                        self._skip_release_send = False
+                    elif self._speech_detected:
+                        action = getattr(self.config, "dictation_release_action", "enter")
+                        self._gate.reset()
+                        self._end_session(reason="release_send", post_action=action)
+                    else:
+                        self._gate.reset()
+                        self._end_session(reason="release_nospeech", post_action=None)
         else:
             transition = self._gate.process(
                 block,
@@ -373,6 +431,45 @@ class DictationController:
                     self._gate.reset()
                     self._end_session(reason="idle_cap", post_action=None)
 
+        if self._gate.active and src == "audio_fallback":
+            block_ms = self._gate._block_ms
+            if self.knob_held or full_rms >= self.config.dictation_onset_rms:
+                self._idle_ms = 0.0
+            else:
+                self._idle_ms += block_ms
+                cap = getattr(self.config, "dictation_idle_cap_ms", 180000)
+                if self._idle_ms >= cap:
+                    self._gate.reset()
+                    self._end_session(reason="idle_cap", post_action=None)
+
+    def _mark_audio_button_cooldown(self) -> None:
+        post_ms = int(getattr(self.config, "dictation_audio_post_button_ms", 900))
+        self._audio_button_dead_until = self._mono() + post_ms / 1000.0
+        self._audio_ptt.reset()
+
+    def handle_audio_grey(self, slot: int, detection: dict | None = None) -> bool:
+        """3.5 mm-only grey keys: slot 1 send, slot 2 cancel; consume spurious slots."""
+        if self.knob_source != "audio_fallback" or slot is None or slot > 4:
+            return False
+        det = detection or {}
+        self.debug_logger.log_detection(
+            f"slot={slot} sim={det.get('similarity', '-')} audio_grey=1"
+        )
+        self._mark_audio_button_cooldown()
+        if slot == 1 and self._gate.active:
+            self._gate.reset()
+            action = getattr(self.config, "dictation_release_action", "enter")
+            self._end_session(reason="grey_send", post_action=action)
+            return True
+        if slot == 2 and self._gate.active:
+            self._skip_release_send = True
+            self._gate.reset()
+            self._end_session(reason="grey_cancel", post_action=None, cancelled=True)
+            return True
+        if self._gate.active:
+            return True
+        return slot in (1, 2)
+
     def try_serial_grey_audio_action(self, slot: int) -> bool:
         """True if serial G0 recently armed and this audio slot may fire (outside session)."""
         if self.knob_source != "serial" or self._gate.active:
@@ -386,6 +483,8 @@ class DictationController:
         return True
 
     def handle_button_end(self, slot: int, detection: dict | None = None) -> bool:
+        if self.knob_source == "audio_fallback":
+            return False
         if not self.uses_audio_button_end():
             return False
         if not self._gate.active or slot is None or slot > 4:
@@ -434,6 +533,12 @@ class DictationController:
             self.logger.dictation(front, f"keys {detail}")
 
     def _begin_session(self) -> None:
+        if (
+            self.knob_source == "audio_fallback"
+            and self._mono() < self._audio_session_cooldown_until
+        ):
+            self._log_dictation("start skipped reason=audio_cooldown")
+            return
         front = self._front()
         profile = match_profile(front, self.config.dictation_profiles or [])
         if profile is None:
@@ -484,7 +589,13 @@ class DictationController:
         min_gap_ms = int(getattr(self.config, "dictation_min_toggle_gap_ms", 400))
 
         def stop_keys() -> None:
-            if cancelled and profile.get("cancel_escape"):
+            if cancelled and (
+                profile.get("cancel_escape")
+                or (
+                    self.knob_source == "audio_fallback"
+                    and reason == "grey_cancel"
+                )
+            ):
                 self.router.dictation_tap(["esc"])
                 self._log_keys("escape")
             if mode == "hold":
@@ -501,6 +612,10 @@ class DictationController:
         self._on_event("dictation", ("stop", reason))
         self._log_dictation(
             f"stop reason={reason} profile={match_name} knob_source={self.knob_source}")
+
+        if self.knob_source == "audio_fallback":
+            cd_ms = int(getattr(self.config, "dictation_audio_session_cooldown_ms", 800))
+            self._audio_session_cooldown_until = self._mono() + cd_ms / 1000.0
 
         if mode == "toggle" and self._session_toggle_tap_at is not None:
             elapsed_ms = (self._mono() - self._session_toggle_tap_at) * 1000.0
