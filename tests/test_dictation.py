@@ -98,12 +98,29 @@ def test_silence_does_not_end_active_session():
 def test_hold_cursor_and_button_end_slot1():
     kb = FakeKeyboard()
     eng, sched = _engine_with_dictation(kb)
-    for _ in range(2):
-        eng.handle_block(_speech_block())
+    eng.dictation.set_serial_link(False, "no_port")
+    tap = {
+        "slot": 1,
+        "similarity": 0.92,
+        "similarity_margin": 0.1,
+        "square_score": 0.3,
+        "rms": 9000,
+        "duration_ms": 150,
+    }
+    assert eng.dictation.handle_audio_grey(1, tap)
     assert eng.dictation.is_active
-    consumed = eng.dictation.handle_button_end(1, {"similarity": 0.9, "rms": 9000})
-    assert consumed
-    sched[0][1]()  # enter after delay
+    det = {
+        "slot": 1,
+        "similarity": 0.92,
+        "similarity_margin": 0.1,
+        "square_score": 0.3,
+        "rms": 9000,
+        "duration_ms": 150,
+    }
+    before = len(sched)
+    assert eng.dictation.handle_audio_grey(1, det)
+    for _, fn in sched[before:]:
+        fn()
     assert ("press", "ENTER") in kb.events
 
 

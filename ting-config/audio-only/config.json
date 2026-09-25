@@ -1,0 +1,18 @@
+{
+  "name": "AGENT CUES (audio-only)",
+  "samples": [
+    { "pos": 0, "file": "1.wav", "playmode": "oneshot" },
+    { "pos": 1, "file": "2.wav", "playmode": "oneshot" },
+    { "pos": 2, "file": "3.wav", "playmode": "oneshot" },
+    { "pos": 3, "file": "4.wav", "playmode": "oneshot" }
+  ],
+  "presets": [
+    {
+      "pos": 0,
+      "list": [
+        { "effect": "SAMPLE", "speed": 1.0, "pitch": 0.0, "level": 1.0 }
+      ],
+      "trigger": { "row": 0 }
+    }
+  ]
+}

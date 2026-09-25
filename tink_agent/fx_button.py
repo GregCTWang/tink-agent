@@ -255,19 +255,23 @@ class FxButtonDetector:
             if n > 0:
                 self.templates[slot] = vec / n
 
-    def _best_match(self, feat: np.ndarray, rms: float) -> tuple[int | None, float]:
+    def _best_match(self, feat: np.ndarray, rms: float) -> tuple[int | None, float, float]:
         best_slot = None
         best_sim = -1.0
+        second_sim = -1.0
         for slot, tmpl in self.templates.items():
             sim = cosine_similarity(feat, tmpl)
             if sim > best_sim:
+                second_sim = best_sim
                 best_sim = sim
                 best_slot = slot
+            elif sim > second_sim:
+                second_sim = sim
         if best_slot is None or best_sim < self.similarity_min:
-            return None, best_sim
+            return None, best_sim, second_sim
         if best_slot == 4 and rms < 8500:
-            return None, best_sim
-        return best_slot, best_sim
+            return None, best_sim, second_sim
+        return best_slot, best_sim, second_sim
 
     def _reset_acc(self) -> None:
         self._acc_slot = None
@@ -305,12 +309,18 @@ class FxButtonDetector:
         else:
             self._cooldown = self._lockout_blocks
         sim = cosine_similarity(feat, self.templates[slot]) if slot in self.templates else 0.0
+        second = -1.0
+        for s, tmpl in self.templates.items():
+            if s == slot:
+                continue
+            second = max(second, cosine_similarity(feat, tmpl))
         self.last_detection = {
             "slot": slot,
             "similarity": sim,
             "rms": avg_rms,
             "duration_ms": dur_ms,
             "square_score": avg_sq,
+            "similarity_margin": sim - second if second >= 0 else sim,
         }
         return slot
 
@@ -318,12 +328,15 @@ class FxButtonDetector:
         block = np.asarray(block).reshape(-1)
         rms = block_rms(block)
         feat = spectral_feature_vector(block, self.sample_rate)
-        slot_guess, sim = self._best_match(feat, rms)
+        slot_guess, sim, second_sim = self._best_match(feat, rms)
         sq = slot1_square_wave_score(block, self.sample_rate)
+        margin = sim - second_sim if second_sim >= 0 else 0.0
         self.last_metrics = {
             "rms": rms,
             "best_slot": slot_guess,
             "similarity": sim,
+            "similarity_second": second_sim,
+            "similarity_margin": margin,
             "square_score": sq,
         }
         self.button_active = self._acc_blocks > 0
@@ -368,6 +381,57 @@ class FxButtonDetector:
             if fired is not None:
                 return fired
         return None
+
+
+def passes_audio_only_button(detection: dict, config) -> bool:
+    """Stricter acceptance for 3.5 mm-only grey-key (sample light 1 only)."""
+    slot = int(detection.get("slot") or 0)
+    if slot != 1:
+        return False
+    sim = float(detection.get("similarity") or 0.0)
+    margin = float(detection.get("similarity_margin") or 0.0)
+    sq = float(detection.get("square_score") or 0.0)
+    rms = float(detection.get("rms") or 0.0)
+    sim_min = float(getattr(config, "fx_button_similarity_min_audio", 0.88))
+    margin_min = float(getattr(config, "fx_button_similarity_margin_min", 0.06))
+    if sim < sim_min or margin < margin_min:
+        return False
+    sq_min = float(getattr(config, "fx_button_slot1_square_min_audio", 0.28))
+    rms_min = float(getattr(config, "fx_button_slot1_rms_min", 3500.0))
+    if sq < sq_min or rms < rms_min:
+        return False
+    return True
+
+
+def passes_audio_only_block(metrics: dict, config) -> bool:
+    """Per-block slot-1 gate while a grey buzz is accumulating."""
+    if int(metrics.get("best_slot") or 0) != 1:
+        return False
+    return passes_audio_only_button(
+        {
+            "slot": 1,
+            "similarity": metrics.get("similarity", 0.0),
+            "similarity_margin": metrics.get("similarity_margin", 0.0),
+            "square_score": metrics.get("square_score", 0.0),
+            "rms": metrics.get("rms", 0.0),
+        },
+        config,
+    )
+
+
+def tracks_audio_grey_buzz(metrics: dict, config) -> bool:
+    """Live slot-1 buzz tracking (no margin gate — wobbles mid-hold)."""
+    if int(metrics.get("best_slot") or 0) != 1:
+        return False
+    rms = float(metrics.get("rms") or 0.0)
+    sq = float(metrics.get("square_score") or 0.0)
+    sim = float(metrics.get("similarity") or 0.0)
+    if rms < float(getattr(config, "fx_button_slot1_rms_min", 3500.0)):
+        return False
+    if sq < float(getattr(config, "fx_button_slot1_square_min", 0.22)):
+        return False
+    sim_min = float(getattr(config, "fx_button_similarity_min_audio", 0.88))
+    return sim >= sim_min
 
 
 def replay_detections(

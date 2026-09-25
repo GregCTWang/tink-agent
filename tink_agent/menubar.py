@@ -17,6 +17,7 @@ from .dictation import DictationController, DictationDebugLogger
 from .knob_serial import KnobSerialMonitor
 from .activity_log import ActivityLogger, DEFAULT_LOG
 from . import launchagent
+from .listen_only import ListenProbeLogger
 
 _REPO = Path(__file__).resolve().parent.parent
 _ASSETS = _REPO / "assets"
@@ -119,11 +120,37 @@ class TinkAgentApp(rumps.App):
         )
         eng = Engine(c, buttons, vg, tr, router, on_event=self._on_event,
                      logger=self.activity_log, dictation=dictation)
+        self._listen_probe = ListenProbeLogger.try_activate(sample_rate=c.sample_rate)
+        eng.listen_only = self._listen_probe is not None
+        eng._listen_probe = self._listen_probe
+        if self._listen_probe is not None:
+            self._listen_probe.write_header()
+            self._listen_probe.log_knob_link(False, "startup")
+        if eng.listen_only:
+            def _knob_line(token: str) -> None:
+                if self._listen_probe is not None:
+                    self._listen_probe.log_serial_token(token)
+
+            def _knob_link(ok: bool, msg: str = "") -> None:
+                if self._listen_probe is not None:
+                    self._listen_probe.log_knob_link(ok, msg)
+
+            on_line = _knob_line
+            on_knob_link = _knob_link
+            on_knob_debug = (
+                lambda line: self._listen_probe.log_serial_token(line)
+                if self._listen_probe
+                else None
+            )
+        else:
+            on_line = dictation.on_serial_line
+            on_knob_link = dictation.set_serial_link
+            on_knob_debug = dictation.debug_logger.log_serial
         self._knob_monitor = KnobSerialMonitor(
             c,
-            on_line=dictation.on_serial_line,
-            on_link=lambda ok, msg: dictation.set_serial_link(ok, msg),
-            on_debug=dictation.debug_logger.log_serial,
+            on_line=on_line,
+            on_link=on_knob_link,
+            on_debug=on_knob_debug,
         )
         self._knob_monitor.start()
         return eng
@@ -157,11 +184,15 @@ class TinkAgentApp(rumps.App):
         # never touch AppKit off the main thread.
         import sys
         print(f"[audio] stream status: {status}", file=sys.stderr, flush=True)
-        self.engine.release_dictation("audio_glitch")
+        if not getattr(self.engine, "listen_only", False):
+            self.engine.release_dictation("audio_glitch")
         self._status = f"audio glitch: {str(status)[:24]}"
 
     # --- main-thread rendering ---
     def _tick(self, _):
+        probe = getattr(self, "_listen_probe", None)
+        if probe is not None:
+            self.engine.listen_only = probe.refresh_active()
         if not self._autostart_done:
             self._autostart_done = True
             self.start_listening(None)
