@@ -246,6 +246,10 @@ class DictationController:
         self._cancel_snapshot: FocusSnapshot | None = None
         self._ax_port_factory = ax_port_factory
         self._ax_port = None
+        self._session_epoch = 0
+        self._pending_enter_token = 0
+        self._restart_ready_at = 0.0
+        self._speech_ms = 0.0
 
     @property
     def knob_source(self) -> str:
@@ -305,7 +309,12 @@ class DictationController:
                 return
             if not self.knob_held or self._gate.active:
                 return
+            if self._mono() < self._restart_ready_at:
+                wait_ms = int((self._restart_ready_at - self._mono()) * 1000.0) + 1
+                self._delay(wait_ms, fire)
+                return
             self._speech_detected = False
+            self._speech_ms = 0.0
             self._skip_release_send = False
             self._begin_session()
 
@@ -331,7 +340,8 @@ class DictationController:
                 return
             if self._gate.active:
                 self._gate.reset()
-                if self._speech_detected:
+                min_speech = int(getattr(self.config, "dictation_min_speech_ms", 300))
+                if self._speech_detected and self._speech_ms >= min_speech:
                     action = getattr(self.config, "dictation_release_action", "enter")
                     self._end_session(reason="release_send", post_action=action)
                 else:
@@ -339,6 +349,7 @@ class DictationController:
             return
         if token == "G0":
             self._log_knob("grey_press")
+            self._cancel_pending_enter("grey_cancel")
             if self._gate.active and self.knob_held:
                 self._skip_release_send = True
                 self._gate.reset()
@@ -375,6 +386,8 @@ class DictationController:
             self._idle_ms = 0.0
             if self._gate.active:
                 self._speech_detected = True
+                block_ms = 1000.0 * self.config.block_size / self.config.sample_rate
+                self._speech_ms += block_ms
 
         if src == "serial":
             pass
@@ -468,6 +481,22 @@ class DictationController:
         elif self.logger is not None:
             self.logger.dictation(front, f"restore {detail}")
 
+    def _cancel_pending_enter(self, reason: str) -> None:
+        self._pending_enter_token += 1
+        if reason:
+            self.debug_logger.log_session(f"enter cancelled reason={reason}")
+
+    def _finish_end_sequence(self) -> None:
+        cd = int(getattr(self.config, "dictation_restart_cooldown_ms", 700))
+        self._restart_ready_at = self._mono() + cd / 1000.0
+
+    def _front_matches_session(self, session_front: str) -> bool:
+        if not session_front:
+            return True
+        cur = (self._front() or "").lower()
+        exp = session_front.lower()
+        return exp in cur or cur in exp
+
     def _get_ax_port(self):
         if self._ax_port is not None:
             return self._ax_port
@@ -542,6 +571,9 @@ class DictationController:
             self._delay(total, lambda: self._dispatch(undo))
 
     def _begin_session(self) -> None:
+        if self._mono() < self._restart_ready_at:
+            return
+        self._cancel_pending_enter("new_session")
         front = self._front()
         profile = match_profile(front, self.config.dictation_profiles or [])
         if profile is None:
@@ -549,6 +581,9 @@ class DictationController:
             self._on_event("dictation", "no_profile")
             self._log_dictation(f"start skipped reason=no_profile front={front[:40]}")
             return
+        self._session_epoch += 1
+        self._speech_ms = 0.0
+        self._speech_detected = False
         self._gate.activate()
         self._profile = profile
         mode = profile.get("mode", "toggle")
@@ -594,6 +629,10 @@ class DictationController:
         label = self._keys_label(keys)
         min_gap_ms = int(getattr(self.config, "dictation_min_toggle_gap_ms", 400))
         cancel_method = resolve_cancel_method(profile) if cancelled else ""
+        session_front = self._front()
+        closed_epoch = self._session_epoch
+        self._cancel_pending_enter("session_end")
+        enter_token = self._pending_enter_token
 
         def stop_keys() -> None:
             if cancelled and cancel_method == "stop" and profile.get("cancel_escape"):
@@ -626,7 +665,61 @@ class DictationController:
                 )
 
             self._dispatch(do_escape_cancel)
+            self._delay(180, lambda: self._finish_end_sequence())
             return
+
+        if cancelled and cancel_method == "undo_after_release":
+            self._session_toggle_tap_at = None
+            wait_ms = int(
+                profile.get("cancel_fallback_delay_ms")
+                or getattr(self.config, "cancel_fallback_delay_ms", 1500)
+            )
+
+            def do_undo_cancel() -> None:
+                self.router.dictation_grey_cancel_undo_after_release(
+                    profile,
+                    self.config,
+                    log_fn=self._log_keys,
+                )
+
+            self._dispatch(do_undo_cancel)
+            self._delay(wait_ms + 200, lambda: self._finish_end_sequence())
+            return
+
+        def schedule_enter() -> None:
+            if post_action in (None, "noop", "unmapped"):
+                self._finish_end_sequence()
+                return
+
+            def fire_enter() -> None:
+                if enter_token != self._pending_enter_token:
+                    self._log_keys("enter skipped reason=superseded")
+                    self._finish_end_sequence()
+                    return
+                if self._gate.active:
+                    self._log_keys("enter skipped reason=new_session")
+                    self._finish_end_sequence()
+                    return
+                if closed_epoch != self._session_epoch:
+                    self._log_keys("enter skipped reason=new_session")
+                    self._finish_end_sequence()
+                    return
+                if not self._front_matches_session(session_front):
+                    self._log_keys("enter skipped reason=app_changed")
+                    self._finish_end_sequence()
+                    return
+                self.router.fire_named_action(post_action)
+                self._log_keys(post_action.replace("_", "+"))
+                self._finish_end_sequence()
+
+            self._delay(delay_ms, lambda: self._dispatch(fire_enter))
+
+        def run_stop_then_enter() -> None:
+            self._dispatch(stop_keys)
+            if cancelled:
+                self._finish_end_sequence()
+            else:
+                schedule_enter()
 
         stop_delay_ms = 0
         if mode == "toggle" and self._session_toggle_tap_at is not None and not cancelled:
@@ -634,11 +727,11 @@ class DictationController:
             wait_ms = int(max(0, min_gap_ms - elapsed_ms))
             stop_delay_ms = wait_ms
             if wait_ms > 0:
-                self._delay(wait_ms, dispatch_stop)
+                self._delay(wait_ms, run_stop_then_enter)
             else:
-                dispatch_stop()
+                run_stop_then_enter()
         else:
-            dispatch_stop()
+            run_stop_then_enter()
 
         if cancelled and cancel_method == "restore" and restore_snap is not None:
             self._schedule_cancel_restore(profile, restore_snap)
@@ -647,10 +740,3 @@ class DictationController:
             fallback = str(profile.get("cancel_fallback") or "none").strip().lower()
             if fallback == "undo":
                 self._schedule_cancel_fallback(profile, stop_delay_ms=stop_delay_ms)
-
-        if post_action and post_action not in ("noop", "unmapped") and not cancelled:
-            def post() -> None:
-                self.router.fire_named_action(post_action)
-                self._log_keys(post_action.replace("_", "+"))
-
-            self._delay(delay_ms, lambda: self._dispatch(post))

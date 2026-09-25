@@ -96,6 +96,8 @@ class Config:
     cancel_restore_settle_ms: int = 400
     cancel_fallback_delay_ms: int = 1500
     cancel_escape_then_toggle: bool = False
+    dictation_restart_cooldown_ms: int = 700
+    dictation_min_speech_ms: int = 300
     knob_serial_enabled: bool = True
     knob_serial_port: str = ""  # auto: TE EP-2350 CDC /dev/cu.usbmodemEP*
     knob_poll_ms: int = 10

@@ -11,6 +11,7 @@ _VK = {
     "command": 0x37,
     "m": 0x2E,
     "d": 0x02,
+    "z": 0x06,
 }
 
 
@@ -39,6 +40,15 @@ def post_escape_cleared() -> str:
     detail = post_key(_VK["esc"], True, 0)
     post_key(_VK["esc"], False, 0)
     return detail
+
+
+def post_cmd_z_cleared() -> str:
+    cmd, z = _VK["cmd"], _VK["z"]
+    post_key(cmd, True, 0)
+    post_key(z, True, 0)
+    post_key(z, False, 0)
+    post_key(cmd, False, 0)
+    return "flags=0"
 
 
 def release_tokens_cleared(tokens: list[str]) -> str:

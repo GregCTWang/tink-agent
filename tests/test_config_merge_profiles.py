@@ -32,4 +32,4 @@ def test_config_load_merges_profiles(tmp_path):
     loaded = Config.load(path)
     grok = next(p for p in loaded.dictation_profiles if "Grok" in p["match"])
     assert "restore_on_cancel" in grok
-    assert grok["cancel_fallback"] == "none"
+    assert grok.get("cancel_method") == "escape"

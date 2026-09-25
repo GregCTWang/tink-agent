@@ -249,6 +249,47 @@ class ActionRouter:
             elif then_toggle and keys:
                 self._do_dictation_tap(keys)
 
+    def dictation_grey_cancel_undo_after_release(
+        self, profile: dict, config, log_fn=None
+    ) -> None:
+        self._dispatch(
+            lambda: self._run(
+                self._do_grey_cancel_undo_after_release,
+                (profile, config, log_fn),
+            )
+        )
+
+    def _do_grey_cancel_undo_after_release(self, args) -> None:
+        profile, config, log_fn = args
+        keys = list(profile.get("keys") or [])
+        held = list(self._held_tokens or keys)
+        wait_ms = int(
+            profile.get("cancel_fallback_delay_ms")
+            or getattr(config, "cancel_fallback_delay_ms", 1500)
+        )
+
+        def log(msg: str) -> None:
+            if log_fn:
+                log_fn(msg)
+
+        try:
+            from . import keyboard_cgevent as cg
+
+            cg.release_tokens_cleared(held)
+            log("release (cancel) flags=0")
+            time.sleep(wait_ms / 1000.0)
+            fl = cg.post_cmd_z_cleared()
+            log(f"cmd+z (cancel) {fl}")
+            self._held_keys = []
+            self._held_tokens = []
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self._do_dictation_release_all(None)
+            log("release (cancel) flags=fallback_pynput")
+            time.sleep(wait_ms / 1000.0)
+            self._do_dictation_tap(["cmd", "z"])
+            log("cmd+z (cancel) flags=fallback_pynput")
+
     def dictation_release_all(self) -> None:
         self._run(self._do_dictation_release_all, None)
 

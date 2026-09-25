@@ -146,10 +146,11 @@ def test_hold_speak_release_sends_enter_once():
     d.on_serial_line("K1")
     _run_debounce(sched)
     assert d.is_active
-    for _ in range(2):
+    for _ in range(8):
         eng.handle_block(_speech())
     d.on_serial_line("K0")
     assert not d.is_active
+    d._restart_ready_at = 0.0
     _drain_sched(sched)
     assert ("press", "ENTER") in kb.events
 
