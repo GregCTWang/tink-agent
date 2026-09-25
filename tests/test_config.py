@@ -97,6 +97,13 @@ def test_onboarding_done_roundtrip(tmp_path):
     assert Config.load(p).onboarding_done is True
 
 
+def test_dictation_grey_only_audio_defaults():
+    c = Config()
+    assert c.dictation_grey_tap_max_ms == 350
+    assert c.dictation_grey_hold_min_ms == 700
+    assert c.dictation_audio_idle_cap_ms == 60000
+
+
 def test_dictation_defaults():
     c = Config()
     assert c.dictation_enabled is True

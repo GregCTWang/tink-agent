@@ -222,21 +222,19 @@ def test_idle_cap_when_released_and_silent():
 def test_audio_fallback_button_end():
     kb = FakeKeyboard()
     eng, d, sched, _ = _setup(kb, serial_linked=False)
-    loud = np.full(800, 400, dtype=np.int16)
-    for _ in range(3):
-        eng.handle_block(loud)
-    assert sched
-    sched[0][1]()
-    assert d.is_active
-    det = {
-        "slot": 2,
+    tap = {
+        "slot": 1,
         "similarity": 0.91,
         "similarity_margin": 0.08,
-        "rms": 5000,
-        "square_score": 0.05,
+        "rms": 9000,
+        "square_score": 0.31,
+        "duration_ms": 150,
     }
-    assert d.handle_audio_grey(2, det)
-    sched[0][1]()
+    assert d.handle_audio_grey(1, tap)
+    assert d.is_active
+    assert d.handle_audio_grey(1, tap)
+    for _, fn in sched:
+        fn()
 
 
 def test_exec_payload_is_read_only_poll():

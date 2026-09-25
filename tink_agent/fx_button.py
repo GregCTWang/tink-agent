@@ -384,8 +384,10 @@ class FxButtonDetector:
 
 
 def passes_audio_only_button(detection: dict, config) -> bool:
-    """Stricter acceptance for 3.5 mm-only mode (no serial knob)."""
+    """Stricter acceptance for 3.5 mm-only grey-key (sample light 1 only)."""
     slot = int(detection.get("slot") or 0)
+    if slot != 1:
+        return False
     sim = float(detection.get("similarity") or 0.0)
     margin = float(detection.get("similarity_margin") or 0.0)
     sq = float(detection.get("square_score") or 0.0)
@@ -394,16 +396,42 @@ def passes_audio_only_button(detection: dict, config) -> bool:
     margin_min = float(getattr(config, "fx_button_similarity_margin_min", 0.06))
     if sim < sim_min or margin < margin_min:
         return False
-    if slot == 1:
-        sq_min = float(getattr(config, "fx_button_slot1_square_min_audio", 0.28))
-        rms_min = float(getattr(config, "fx_button_slot1_rms_min", 3500.0))
-        if sq < sq_min or rms < rms_min:
-            return False
-    else:
-        rms_min = float(getattr(config, "fx_button_rms_min_audio", 2500.0))
-        if rms < rms_min:
-            return False
+    sq_min = float(getattr(config, "fx_button_slot1_square_min_audio", 0.28))
+    rms_min = float(getattr(config, "fx_button_slot1_rms_min", 3500.0))
+    if sq < sq_min or rms < rms_min:
+        return False
     return True
+
+
+def passes_audio_only_block(metrics: dict, config) -> bool:
+    """Per-block slot-1 gate while a grey buzz is accumulating."""
+    if int(metrics.get("best_slot") or 0) != 1:
+        return False
+    return passes_audio_only_button(
+        {
+            "slot": 1,
+            "similarity": metrics.get("similarity", 0.0),
+            "similarity_margin": metrics.get("similarity_margin", 0.0),
+            "square_score": metrics.get("square_score", 0.0),
+            "rms": metrics.get("rms", 0.0),
+        },
+        config,
+    )
+
+
+def tracks_audio_grey_buzz(metrics: dict, config) -> bool:
+    """Live slot-1 buzz tracking (no margin gate — wobbles mid-hold)."""
+    if int(metrics.get("best_slot") or 0) != 1:
+        return False
+    rms = float(metrics.get("rms") or 0.0)
+    sq = float(metrics.get("square_score") or 0.0)
+    sim = float(metrics.get("similarity") or 0.0)
+    if rms < float(getattr(config, "fx_button_slot1_rms_min", 3500.0)):
+        return False
+    if sq < float(getattr(config, "fx_button_slot1_square_min", 0.22)):
+        return False
+    sim_min = float(getattr(config, "fx_button_similarity_min_audio", 0.88))
+    return sim >= sim_min
 
 
 def replay_detections(

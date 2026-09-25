@@ -72,9 +72,12 @@ class Config:
     fx_button_similarity_margin_min: float = 0.06
     fx_button_rms_min_audio: float = 2500.0
     fx_button_slot1_square_min_audio: float = 0.28
-    dictation_audio_ptt_hangover_ms: int = 400
+    dictation_audio_ptt_hangover_ms: int = 400  # legacy; unused in grey-key-only audio_fallback
     dictation_audio_post_button_ms: int = 900
     dictation_audio_session_cooldown_ms: int = 800
+    dictation_audio_idle_cap_ms: int = 60000
+    dictation_grey_tap_max_ms: int = 350
+    dictation_grey_hold_min_ms: int = 700
     # Legacy silence-floor keys (ignored; kept for config merge compatibility).
     dictation_release_rms: float = 35.0
     dictation_hangover_ms: int = 450

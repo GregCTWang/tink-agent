@@ -81,7 +81,11 @@ class Engine:
                         self.logger.action(slot, action, front)
                         self.logger.tone(slot, front, "serial_grey_audio")
             elif self.dictation and self.dictation.knob_source == "audio_fallback":
-                if not passes_audio_only_button(detection, self.config):
+                if slot != 1:
+                    if self.logger:
+                        self.logger.tone(slot, front, f"audio_grey_ignored slot{slot}")
+                    slot = None
+                elif not passes_audio_only_button(detection, self.config):
                     slot = None
                 elif self.dictation.handle_audio_grey(slot, detection):
                     self._on_event("tone", slot)

@@ -99,10 +99,15 @@ def test_hold_cursor_and_button_end_slot1():
     kb = FakeKeyboard()
     eng, sched = _engine_with_dictation(kb)
     eng.dictation.set_serial_link(False, "no_port")
-    for _ in range(3):
-        eng.handle_block(_speech_block(400))
-    assert sched
-    sched[0][1]()
+    tap = {
+        "slot": 1,
+        "similarity": 0.92,
+        "similarity_margin": 0.1,
+        "square_score": 0.3,
+        "rms": 9000,
+        "duration_ms": 150,
+    }
+    assert eng.dictation.handle_audio_grey(1, tap)
     assert eng.dictation.is_active
     det = {
         "slot": 1,
@@ -110,6 +115,7 @@ def test_hold_cursor_and_button_end_slot1():
         "similarity_margin": 0.1,
         "square_score": 0.3,
         "rms": 9000,
+        "duration_ms": 150,
     }
     before = len(sched)
     assert eng.dictation.handle_audio_grey(1, det)
