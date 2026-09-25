@@ -106,7 +106,13 @@ def test_dictation_defaults():
     assert c.dictation_idle_cap_ms == 180000
     assert c.dictation_min_toggle_gap_ms == 400
     assert c.knob_start_debounce_ms == 150
+    assert c.cancel_restore_timeout_ms == 4000
+    assert c.cancel_restore_settle_ms == 400
     assert c.dictation_release_action == "enter"
+    claude = next(p for p in c.dictation_profiles if p.get("match") == "Claude")
+    assert claude.get("restore_on_cancel") is True
+    grok = next(p for p in c.dictation_profiles if "Grok" in p.get("match", ""))
+    assert grok.get("restore_on_cancel") is False
     assert c.fx_button_similarity_min == 0.72
     assert c.dictation_debug_log is False
     assert len(c.dictation_profiles) >= 3

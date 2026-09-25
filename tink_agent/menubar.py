@@ -110,6 +110,11 @@ class TinkAgentApp(rumps.App):
             path=(c.dictation_debug_path or None),
         )
         self._frontmost_tracker = FrontmostTracker(_default_frontmost)
+
+        def _ax_port_factory(router, dispatch):
+            from .ax_macos import create_mac_ax_port
+            return create_mac_ax_port(router, dispatch)
+
         dictation = DictationController(
             c, router, frontmost_fn=self._frontmost_tracker,
             dispatch=_main_thread_dispatch,
@@ -117,6 +122,7 @@ class TinkAgentApp(rumps.App):
             on_event=self._on_event,
             logger=self.activity_log,
             debug_logger=self._dictation_debug,
+            ax_port_factory=_ax_port_factory,
         )
         eng = Engine(c, buttons, vg, tr, router, on_event=self._on_event,
                      logger=self.activity_log, dictation=dictation)

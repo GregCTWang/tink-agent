@@ -62,6 +62,13 @@ def test_dictation_and_tone_log_kinds(tmp_path):
     assert "\ttone\t" in text and "slot2" in text
 
 
+def test_restore_log_kind(tmp_path):
+    lg = _logger(tmp_path)
+    lg.restore("Claude app", "snapshot len=0 role=AXTextArea")
+    lg.close()
+    assert "\trestore\tClaude app\tsnapshot len=0" in (tmp_path / "activity.log").read_text()
+
+
 def test_keys_log_kind(tmp_path):
     lg = _logger(tmp_path)
     lg.keys("Grok Bot com.grok", "cmd+d (start)")

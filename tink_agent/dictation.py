@@ -9,6 +9,12 @@ from typing import Callable
 
 import numpy as np
 
+from .ax_restore import (
+    CancelRestoreEngine,
+    FocusSnapshot,
+    is_safe_snapshot_target,
+)
+
 DEFAULT_PROFILES: list[dict] = [
     {
         "match": "Grok Bot",
@@ -16,6 +22,7 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["cmd", "d"],
         "auto_send": True,
         "send_delay_ms": 200,
+        "restore_on_cancel": False,
     },
     {
         "match": "Claude",
@@ -23,6 +30,7 @@ DEFAULT_PROFILES: list[dict] = [
         "keys": ["cmd", "d"],
         "auto_send": True,
         "send_delay_ms": 200,
+        "restore_on_cancel": True,
     },
     {
         "match": "Cursor",
@@ -31,6 +39,7 @@ DEFAULT_PROFILES: list[dict] = [
         "auto_send": True,
         "send_delay_ms": 200,
         "cancel_escape": True,
+        "restore_on_cancel": True,
     },
 ]
 
@@ -196,6 +205,7 @@ class DictationController:
         logger=None,
         debug_logger: DictationDebugLogger | None = None,
         monotonic_fn: Callable[[], float] | None = None,
+        ax_port_factory: Callable[[object, Callable], object | None] | None = None,
     ):
         self.config = config
         self.router = router
@@ -218,6 +228,9 @@ class DictationController:
         self._speech_detected = False
         self._knob_start_generation = 0
         self._session_toggle_tap_at: float | None = None
+        self._cancel_snapshot: FocusSnapshot | None = None
+        self._ax_port_factory = ax_port_factory
+        self._ax_port = None
 
     @property
     def knob_source(self) -> str:
@@ -433,6 +446,66 @@ class DictationController:
         elif self.logger is not None:
             self.logger.dictation(front, f"keys {detail}")
 
+    def _log_restore(self, detail: str) -> None:
+        front = self._front()
+        if self.logger is not None and hasattr(self.logger, "restore"):
+            self.logger.restore(front, detail)
+        elif self.logger is not None:
+            self.logger.dictation(front, f"restore {detail}")
+
+    def _get_ax_port(self):
+        if self._ax_port is not None:
+            return self._ax_port
+        if self._ax_port_factory is None:
+            return None
+        self._ax_port = self._ax_port_factory(self.router, self._dispatch)
+        return self._ax_port
+
+    def _snapshot_for_cancel(self, profile: dict) -> None:
+        self._cancel_snapshot = None
+        if not profile.get("restore_on_cancel"):
+            return
+        port = self._get_ax_port()
+        if port is None:
+            self._log_restore("restore skipped reason=ax_unavailable")
+            return
+        raw = port.snapshot_focused()
+        if raw is None:
+            self._log_restore("restore skipped reason=unreadable")
+            return
+        match_name = str(profile.get("match") or "")
+        if not is_safe_snapshot_target(raw, match_name):
+            self._log_restore(
+                f"restore skipped reason=unsafe_target role={raw.role} subrole={raw.subrole}"
+            )
+            return
+        self._cancel_snapshot = raw
+        vlen = len(raw.value) if raw.value is not None else 0
+        if not raw.value_readable:
+            self._log_restore(f"snapshot len=- role={raw.role} subrole={raw.subrole} readable=0")
+        else:
+            self._log_restore(
+                f"snapshot len={vlen} role={raw.role} subrole={raw.subrole}"
+            )
+
+    def _schedule_cancel_restore(self, profile: dict, snap: FocusSnapshot) -> None:
+        port = self._get_ax_port()
+        if port is None:
+            return
+        match_name = str(profile.get("match") or "")
+        timeout_ms = int(getattr(self.config, "cancel_restore_timeout_ms", 4000))
+        settle_ms = int(getattr(self.config, "cancel_restore_settle_ms", 400))
+
+        def run() -> None:
+            engine = CancelRestoreEngine(
+                port,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+            )
+            engine.restore_after_cancel(snap, match_name, self._log_restore)
+
+        self._delay(350, lambda: self._dispatch(run))
+
     def _begin_session(self) -> None:
         front = self._front()
         profile = match_profile(front, self.config.dictation_profiles or [])
@@ -450,6 +523,7 @@ class DictationController:
         self._log_dictation(
             f"start profile={match_name} mode={mode} knob_source={self.knob_source}")
         label = self._keys_label(keys)
+        self._snapshot_for_cancel(profile)
 
         def start_keys() -> None:
             if mode == "hold":
@@ -470,6 +544,8 @@ class DictationController:
         cancelled: bool = False,
     ) -> None:
         profile = self._profile
+        restore_snap = self._cancel_snapshot
+        self._cancel_snapshot = None
         self._profile = None
         self._idle_ms = 0.0
         if profile is None:
@@ -511,6 +587,9 @@ class DictationController:
                 dispatch_stop()
         else:
             dispatch_stop()
+
+        if cancelled and profile.get("restore_on_cancel") and restore_snap is not None:
+            self._schedule_cancel_restore(profile, restore_snap)
 
         if post_action and post_action not in ("noop", "unmapped") and not cancelled:
             def post() -> None:
